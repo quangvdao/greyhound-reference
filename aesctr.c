@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <immintrin.h>
+#include "simd.h"
 #include "aesctr.h"
 
 static inline void vaesni_encrypt8(uint8_t out[512], __m128i *n, const __m128i *rkeys, int rounds)

@@ -14,6 +14,7 @@
 #include "polz.h"
 #include "sparsemat.h"
 #include "jlproj.h"
+#include "parallel.h"
 #include "labrador.h"
 
 size_t comkey_len = 0;
@@ -29,22 +30,165 @@ static size_t triangularidx(size_t i,size_t j,size_t r) {
   return i;
 }
 
-int sis_secure(size_t rank, double norm) {
+static double sis_log2_cutoff(size_t rank) {
   double maxlog;
 
   maxlog = 2*sqrt(LOGQ*LOGDELTA*N)*sqrt(rank);
-  maxlog = MIN(LOGQ,maxlog);
-  if(log2(norm) < maxlog)
-    return 1;
+  return MIN(LOGQ,maxlog);
+}
+
+static sis_security_mode security_mode = (sis_security_mode)-1;
+
+static double root_hermite_factor(size_t beta) {
+  double b;
+
+  if(beta <= 40) return 1.01295;
+  b = beta;
+  return pow(b/(2*M_PI*M_E)*pow(M_PI*b,1/b),1/(2*(b-1)));
+}
+
+static size_t beta_from_delta(double target) {
+  size_t low = 40;
+  size_t high = 1 << 16;
+
+  if(!isfinite(target)) return 0;
+  if(root_hermite_factor(40) < target) return 40;
+  if(target < root_hermite_factor(high)) return 0;
+  while(low < high) {
+    size_t mid = low+(high-low)/2;
+    if(root_hermite_factor(mid) <= target+1e-13)
+      high = mid;
+    else
+      low = mid+1;
+  }
+  return low;
+}
+
+void sis_set_security_mode(sis_security_mode mode) {
+  security_mode = mode;
+}
+
+sis_security_mode sis_get_security_mode(void) {
+  const char *value;
+
+  if(security_mode != (sis_security_mode)-1) return security_mode;
+  value = getenv("LABRADOR_SIS_SECURITY");
+  if(value && !strcmp(value,"l2-quantum128-adps16"))
+    security_mode = SIS_SECURITY_L2_QUANTUM128_ADPS16;
+  else if(value && strcmp(value,"legacy") && strcmp(value,"legacy-heuristic"))
+    security_mode = SIS_SECURITY_INVALID;
   else
+    security_mode = SIS_SECURITY_LEGACY;
+  return security_mode;
+}
+
+const char *sis_security_mode_name(void) {
+  sis_security_mode mode = sis_get_security_mode();
+
+  if(mode == SIS_SECURITY_L2_QUANTUM128_ADPS16)
+    return "l2-quantum128-adps16";
+  if(mode == SIS_SECURITY_LEGACY)
+    return "legacy-heuristic";
+  return "INVALID";
+}
+
+sis_estimate sis_estimate_l2_core_svp_adps16(size_t rank, size_t width,
+                                             double norm) {
+  sis_estimate result = {};
+  const double q = ldexp(1,LOGQ)-QOFF;
+  const double logq = log2(q);
+  double logbound,logdelta,droot,rootvolume,target;
+  double lnq,loga2,logb2;
+  size_t n,m,d,beta;
+
+  if(!rank || !width || !isfinite(norm) || norm <= 0) return result;
+  if(rank > SIZE_MAX/N || width > SIZE_MAX/N) return result;
+  result.valid = 1;
+  norm = ceil(norm);
+  if(norm >= (q-1)/2) {
+    result.trivially_easy = 1;
+    result.finite = 1;
+    return result;
+  }
+  n = rank*N;
+  m = width*N;
+  logbound = log2(norm);
+  logdelta = logbound*logbound/(4*n*logq);
+  droot = sqrt(n*logq/logdelta);
+  d = droot >= (double)SIZE_MAX ? SIZE_MAX : (size_t)floor(droot);
+  d = MIN(d,m);
+  result.lattice_dimension = d;
+  if(d <= 1) {
+    result.valid = 0;
+    return result;
+  }
+
+  rootvolume = (double)n/d*logq;
+  target = exp2((logbound-rootvolume)/(d-1));
+  beta = target >= 1 ? beta_from_delta(target) : 0;
+  result.beta = beta ? MIN(beta,d) : d;
+
+  lnq = logq*M_LN2;
+  loga2 = log((double)n*lnq);
+  logb2 = log((double)d)+2*(double)n/d*lnq;
+  if(!beta || beta > d || log(norm) <= 0.5*MIN(loga2,logb2))
+    return result;
+
+  result.finite = 1;
+  result.quantum_bits = 0.265*beta;
+  return result;
+}
+
+int sis_secure(size_t rank, size_t width, double norm) {
+  sis_estimate estimate;
+
+  if(sis_get_security_mode() == SIS_SECURITY_LEGACY)
+    return log2(norm) < sis_log2_cutoff(rank);
+  if(sis_get_security_mode() != SIS_SECURITY_L2_QUANTUM128_ADPS16)
     return 0;
+  estimate = sis_estimate_l2_core_svp_adps16(rank,width,norm);
+  return estimate.valid && !estimate.trivially_easy &&
+         (!estimate.finite || estimate.quantum_bits >= 128);
+}
+
+void print_sis_audit_pp(const char *role, size_t rank, size_t width, double l2_bound) {
+  double log2_bound = log2(l2_bound);
+  double cutoff = sis_log2_cutoff(rank);
+  sis_estimate estimate = sis_estimate_l2_core_svp_adps16(rank,width,l2_bound);
+
+  printf("    %-18s rank = %zu, width = %zu ring columns, L2 collision bound = %.9g\n",
+         role,rank,width,l2_bound);
+  printf("      Legacy cutoff: log2(B) %.3f < %.3f (%s; %.3f-bit margin)\n",
+         log2_bound,cutoff,log2_bound < cutoff ? "passes" : "FAILS",cutoff-log2_bound);
+  if(!estimate.valid)
+    printf("      L2 quantum-128 ADPS16: invalid estimator input; FAILS\n");
+  else if(estimate.trivially_easy)
+    printf("      L2 quantum-128 ADPS16: trivially easy (B >= (q - 1)/2); FAILS\n");
+  else if(!estimate.finite)
+    printf("      L2 quantum-128 ADPS16: no finite Euclidean reduction found; passes 128-bit floor"
+           " (d = %zu)\n",estimate.lattice_dimension);
+  else
+    printf("      L2 quantum-128 ADPS16: %.3f bits, beta = %zu, d = %zu (%s)\n",
+           estimate.quantum_bits,estimate.beta,estimate.lattice_dimension,
+           estimate.quantum_bits >= 128 ? "passes" : "FAILS");
+  printf("      SIS-AUDIT role=%s rank=%zu width=%zu l2_bound=%.17g\n",
+         role,rank,width,l2_bound);
+}
+
+typedef struct {
+  size_t first;
+  uint8_t seed[16];
+} comkey_job;
+
+static void init_comkey_chunk(size_t index, void *context) {
+  const comkey_job *job = context;
+  const size_t chunk = job->first+index;
+
+  polxvec_almostuniform(&comkey[32*chunk],32,job->seed,chunk);
 }
 
 void init_comkey(size_t len) {
-  size_t i;
   size_t chunks;
-  __attribute__((aligned(16)))
-  uint8_t seed[16] = {};
   polx *buf;
 
   if(comkey_len >= len)
@@ -56,8 +200,8 @@ void init_comkey(size_t len) {
   free(comkey);
   comkey = buf;
 
-  for(i=comkey_len/32;i<chunks;i++)
-    polxvec_almostuniform(&comkey[32*i],32,seed,i);
+  comkey_job job = { .first = comkey_len/32, .seed = {} };
+  parallel_for(chunks-job.first,32*N,init_comkey_chunk,&job);
 
   comkey_len = chunks*32;
 }
@@ -135,7 +279,8 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
       varz += normsq[i];
     varz /= nn*N;
     varz *= TAU1+4*TAU2;
-    decompose = !tail && !sis_secure(13,6*T*SLACK*sqrt(2*(TAU1+4*TAU2)*varz*nn*N));
+    decompose = !tail && !sis_secure(13,nn,
+                                      6*T*SLACK*sqrt(2*(TAU1+4*TAU2)*varz*nn*N));
     decompose = decompose || 64*varz > (1 << 28);
     if(decompose) {
       cpp->f = 2;
@@ -187,7 +332,7 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
     }
 
     /* commitment ranks */
-    for(cpp->kappa=1;cpp->kappa<=32;cpp->kappa++) {
+    for(cpp->kappa=1;cpp->kappa<=SIS_MAX_RANK;cpp->kappa++) {
       pi->normsq = (ldexp(1,2*cpp->b)/12*(cpp->f-1) + varz/ldexp(1,2*cpp->b*(cpp->f-1)))*nn;
       if(!tail) {
         pi->normsq += (ldexp(1,2*cpp->bu)*(cpp->fu-1)
@@ -196,17 +341,22 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
       if(!tail && quadratic)
         pi->normsq += (ldexp(1,2*cpp->bg)/12*(cpp->fg-1) + varg/ldexp(1,2*(cpp->fg-1)*cpp->bg))*(rr*rr+rr)/2;
       pi->normsq *= N;
-      if(sis_secure(cpp->kappa,6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(pi->normsq)))
+      if(sis_secure(cpp->kappa,nn,
+                    6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(pi->normsq)))
         break;
     }
 
     if(!tail) {
-      for(cpp->kappa1=1;cpp->kappa1<=32;cpp->kappa1++)
-        if(sis_secure(cpp->kappa1,2*SLACK*sqrt(pi->normsq)))
+      size_t tri = (rr*rr+rr)/2;
+      size_t outer1_width = cpp->fu*rr*cpp->kappa+cpp->fg*tri;
+      size_t outer2_width = cpp->fu*tri;
+      for(cpp->kappa1=1;cpp->kappa1<=SIS_MAX_RANK;cpp->kappa1++)
+        if(sis_secure(cpp->kappa1,outer1_width,2*SLACK*sqrt(pi->normsq)) &&
+           sis_secure(cpp->kappa1,outer2_width,2*SLACK*sqrt(pi->normsq)))
           break;
 
       cpp->u1len = cpp->u2len = cpp->kappa1;
-      if(cpp->kappa <= 32 && cpp->kappa1 <= 32 && cpp->fu*rr*cpp->kappa + (cpp->fu+cpp->fg)*(rr*rr+rr)/2 <= 1.1*nn)
+      if(cpp->kappa <= SIS_MAX_RANK && cpp->kappa1 <= SIS_MAX_RANK && cpp->fu*rr*cpp->kappa + (cpp->fu+cpp->fg)*(rr*rr+rr)/2 <= 1.1*nn)
         break;
     }
     else {
@@ -214,7 +364,7 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
       cpp->u1len = rr*cpp->kappa;
       if(quadratic) cpp->u1len += (rr*rr+rr)/2;
       cpp->u2len = 2*rr - 1;
-      if(cpp->kappa <= 32 && (cpp->u1len + cpp->u2len)*LOGQ <= 1.1*nn*(log2(varz)/2+2.05))
+      if(cpp->kappa <= SIS_MAX_RANK && (cpp->u1len + cpp->u2len)*LOGQ <= 1.1*nn*(log2(varz)/2+2.05))
         break;
     }
   }
@@ -224,12 +374,12 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
   pi->u2  = (polz*)&pi->u1[cpp->u1len];
   pi->bb  = (polz*)&pi->u2[cpp->u2len];
 
-  if(cpp->kappa > 32) {
+  if(cpp->kappa > SIS_MAX_RANK) {
     fprintf(stderr,"ERROR in init_proof(): Cannot make inner commitments secure!\n");
     ret = 1;
     goto err;
   }
-  else if(cpp->kappa1 > 32) {
+  else if(cpp->kappa1 > SIS_MAX_RANK) {
     fprintf(stderr,"ERROR in init_proof(): Cannot make outer commitments secure!\n");
     ret = 2;
     goto err;
@@ -440,59 +590,122 @@ void free_witness(witness *wt) {
 }
 
 double print_proof_pp(const proof *pi) {
-  size_t i;
-  double s;
+  size_t i,groups,row_width,outer1_width,outer2_width,tri;
+  size_t wire_bytes,metadata_bytes,payload_bytes,accumulated;
+  double s, projection_bits, modeled_bits,inner_norm,outer_norm;
   const comparams *cpp = pi->cpp;
 
-  printf("Proof:\n");
-  printf("  Witness multiplicity: %zu\n",pi->r);
-  printf("  Witness ranks: ");
+  groups = 0;
+  for(i=0;i<pi->r;i++) groups += pi->nu[i];
+  row_width = accumulated = 0;
+  for(i=0;i<pi->r;i++) {
+    accumulated += pi->n[i];
+    if(pi->nu[i]) {
+      row_width = MAX(row_width,(accumulated+pi->nu[i]-1)/pi->nu[i]);
+      accumulated = 0;
+    }
+  }
+  tri = (groups*groups+groups)/2;
+  outer1_width = groups*cpp->fu*cpp->kappa+cpp->fg*tri;
+  outer2_width = cpp->fu*tri;
+  wire_bytes = proof_contextual_serialized_size(pi);
+  metadata_bytes = 17;
+  payload_bytes = (cpp->u1len+cpp->u2len+LIFTS)*N*QBYTES;
+  s = sqrt(jlproj_normsq(pi->p));
+  projection_bits = (log2(s)-4+2.05)*256;
+  modeled_bits = projection_bits+8.0*payload_bytes;
+  inner_norm = 6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(pi->normsq);
+  outer_norm = 2*SLACK*sqrt(pi->normsq);
+
+  printf("Labrador fold proof parameters:\n");
+  printf("  SIS security policy: %s\n",sis_security_mode_name());
+  printf("  Algebra:\n");
+  printf("    Ring: Z_q[X]/(X^%d + 1), q = 2^%d - %d\n",N,LOGQ,QOFF);
+  printf("    Wire encoding per ring element: %d coefficients x %d bits = %d bytes\n",
+         N,LOGQ,N*QBYTES);
+  printf("  Input witness layout:\n");
+  printf("    Source parts (r): %zu\n",pi->r);
+  printf("    Part ranks n[i] (ring elements in each source vector): ");
   for(i=0;i<MIN(pi->r,10);i++) {
     printf("%zu",pi->n[i]);
-    if(i<pi->r-1) printf(", ");
+    if(i+1<MIN(pi->r,10)) printf(", ");
   }
+  if(pi->r>10) printf(", ...");
   printf("\n");
-  printf("  Witness decomposition: ");
+  printf("    Fold blocks nu[i] (0 continues a group; nonzero closes it with this many blocks): ");
   for(i=0;i<MIN(pi->r,10);i++) {
     printf("%zu",pi->nu[i]);
-    if(i<pi->r-1) printf(", ");
+    if(i+1<MIN(pi->r,10)) printf(", ");
   }
+  if(pi->r>10) printf(", ...");
   printf("\n");
-
-  printf("  Johnson-Lindenstrauss projection matrix nonce: %zu\n",pi->jlnonce);
-  s = sqrt(jlproj_normsq(pi->p));
-  printf("  Projection norm: %.2f\n",s);
-  printf("  Commitment ranks: kappa = %zu; kappa1 = %zu\n",cpp->kappa,cpp->kappa1);
-  printf("  Decomposition bases: b = %llu; bu = %llu; bg = %llu\n",1ULL << cpp->b,1ULL << cpp->bu,1ULL << cpp->bg);
-  printf("  Expansion factors: f = %zu; fu = %zu; fg = %zu\n",cpp->f,cpp->fu,cpp->fg);
-  s  = (log2(s)-4+2.05)*256;
-  s += (cpp->u1len+cpp->u2len+LIFTS)*N*LOGQ;
-  s /= 8192;
-  printf("  Proof size: %.2f KB\n",s);
+  printf("    Resulting amortized rows (sum nu): %zu\n",groups);
+  printf("  Digit decompositions (base B = 2^logB, depth d):\n");
+  printf("    Opening witness:       logB = %zu, B = 2^%zu, d = %zu\n",cpp->b,cpp->b,cpp->f);
+  printf("    Uniform commitment:    logB = %zu, B = 2^%zu, d = %zu\n",cpp->bu,cpp->bu,cpp->fu);
+  printf("    Quadratic cross-terms: logB = %zu, B = 2^%zu, d = %zu%s\n",
+         cpp->bg,cpp->bg,cpp->fg,cpp->fg ? "" : " (not present)");
+  printf("  SIS commitment dimensions:\n");
+  printf("    Inner module rank kappa:  %zu (tested norm bound %.2e; %s)\n",
+         cpp->kappa,inner_norm,sis_secure(cpp->kappa,row_width,inner_norm) ? "passes estimator" : "FAILS estimator");
+  printf("    Outer module rank kappa1: %zu",cpp->kappa1);
+  if(pi->tail)
+    printf(" (tail proof: outer commitment is omitted)\n");
+  else
+    printf(" (tested norm bound %.2e; %s)\n",outer_norm,
+           sis_secure(cpp->kappa1,MAX(outer1_width,outer2_width),outer_norm) ? "passes estimator" : "FAILS estimator");
+  printf("    These ranks are matrix row/module dimensions, not bit-security estimates.\n");
+  printf("  SIS audit instances (scalar dimensions are n = rank*%d, m = width*%d):\n",N,N);
+  print_sis_audit_pp("labrador-inner",cpp->kappa,row_width,inner_norm);
+  if(!pi->tail) {
+    print_sis_audit_pp("labrador-outer-u1",cpp->kappa1,outer1_width,outer_norm);
+    print_sis_audit_pp("labrador-outer-u2",cpp->kappa1,outer2_width,outer_norm);
+  }
+  printf("  Johnson-Lindenstrauss norm proof:\n");
+  printf("    Projection dimension: 256 signed coordinates\n");
+  printf("    Matrix retry nonce: %zu (number of deterministic candidates tried)\n",pi->jlnonce);
+  printf("    Accepted projected l2 norm: %.2f\n",s);
+  printf("  Proof payload:\n");
+  printf("    u1 ring elements: %zu (%s)\n",cpp->u1len,
+         pi->tail ? "embedded inner commitments" : "first outer commitment");
+  printf("    u2 ring elements: %zu (%s)\n",cpp->u2len,
+         pi->tail ? "embedded opening/cross terms" : "second outer commitment");
+  printf("    Integer-to-ring lift elements: %d\n",LIFTS);
+  printf("  Contextual proof encoding (schedule shape out of band):\n");
+  printf("    Rice parameter + JL nonce + next norm: %zu bytes\n",metadata_bytes);
+  printf("    JL coordinates: %zu bytes (lossless; %.2f bytes under legacy entropy model)\n",
+         wire_bytes-metadata_bytes-payload_bytes,projection_bits/8);
+  printf("    Ring-element payload: %zu bytes\n",payload_bytes);
+  printf("    Exact total: %zu bytes\n",wire_bytes);
+  printf("  Legacy entropy model (comparison only; not a wire encoding):\n");
+  printf("    Modeled JL coordinates: %.2f bits = %.2f bytes\n",
+         projection_bits,projection_bits/8);
+  printf("    Modeled payload total: %.2f bits = %.2f bytes\n",
+         modeled_bits,modeled_bits/8);
   printf("\n");
-  return s;
+  return (double)wire_bytes/1024;
 }
 
 void print_statement_pp(const statement *st) {
   size_t i;
 
-  printf("Labrador statement ");
+  printf("Reduced statement (the next fold's public input) ");
   if(st->tail)
     printf("(tail) ");
   for(i=0;i<5;i++)
     printf("%02hhX",st->h[i]);
   printf(":\n");
 
-  printf("  Total amortized multiplicity: %zu\n",st->r);
-  printf("  Rank of amortized opening: %zu\n",st->n);
-  printf("  Rank of outer commitment openings (inner coms, garbage): %zu\n",st->m);
-  printf("  Number of non-zero coefficients in matrix a for quadratic constraint term: %zu\n",st->cnst->a->len);
-  printf("  Norm constraint: %.2f\n",sqrt(st->betasq));
+  printf("  Amortized rows r: %zu (independent folded witness rows)\n",st->r);
+  printf("  Opening width n: %zu ring elements per row\n",st->n);
+  printf("  Auxiliary width m: %zu ring elements for commitment openings/cross-terms\n",st->m);
+  printf("  Quadratic constraint sparsity: %zu nonzero matrix entries\n",st->cnst->a->len);
+  printf("  Accepted witness l2-norm bound beta: %.2f\n",sqrt(st->betasq));
   printf("\n");
 }
 
 double print_witness_pp(const witness *wt) {
-  size_t i;
+  size_t i,wire_bytes;
   double s;
 
   printf("Witness:\n");
@@ -510,11 +723,10 @@ double print_witness_pp(const witness *wt) {
   }
   printf("\n");
 
-  s = 0;
-  for(i=0;i<wt->r;i++)
-    s += (log2((double)wt->normsq[i]/(N*wt->n[i]))/2+2.05)*N*wt->n[i];  // FIXME: not necessarily gaussian
-  s /= 8192;
-  printf("  Witness size: %.2f KB\n",s);
+  wire_bytes = witness_contextual_serialized_size(wt);
+  s = (double)wire_bytes/1024;
+  printf("  Contextual witness serialization: %zu bytes (one Rice parameter per part; shape out of band)\n",
+         wire_bytes);
   printf("\n");
   return s;
 }
@@ -1044,11 +1256,17 @@ int reduce_amortize(statement *ost, const proof *pi) {
   polx (*phi)[n] = (polx(*)[n])ost->cnst->phi;
 
   ost->betasq = pi->normsq;
-  if(!sis_secure(cpp->kappa,6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(ost->betasq))) {
+  if(!sis_secure(cpp->kappa,ost->n,
+                 6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(ost->betasq))) {
     fprintf(stderr,"ERROR in reduce_amortize(): Inner commitments not secure\n");
     return 1;
   }
-  if(!pi->tail && !sis_secure(cpp->kappa1,2*SLACK*sqrt(ost->betasq))) {
+  if(!pi->tail &&
+     (!sis_secure(cpp->kappa1,cpp->fu*ost->r*cpp->kappa+
+                              cpp->fg*(ost->r*ost->r+ost->r)/2,
+                  2*SLACK*sqrt(ost->betasq)) ||
+      !sis_secure(cpp->kappa1,cpp->fu*(ost->r*ost->r+ost->r)/2,
+                  2*SLACK*sqrt(ost->betasq)))) {
     fprintf(stderr,"ERROR in reduce_amortize(): Outer commitments not secure\n");
     return 2;
   }

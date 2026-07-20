@@ -10,6 +10,7 @@
 #include "poly.h"
 #include "polx.h"
 #include "polz.h"
+#include "parallel.h"
 #include "labrador.h"
 #include "chihuahua.h"
 #include "greyhound.h"
@@ -17,14 +18,14 @@
 //#define STREAM_WITNESS
 
 static int init_polcomctx(polcomctx *ctx, size_t len) {
-  double varz;
+  double varz,schedule_norm;
   comparams *cpp = ctx->cpp;
 
   ctx->len = len;
 
   for(cpp->f=2;cpp->f<=8;cpp->f++) {
     cpp->b = (LOGQ+cpp->f/2)/cpp->f;
-    for(cpp->kappa=1;cpp->kappa<=32;cpp->kappa++) {
+    for(cpp->kappa=1;cpp->kappa<=SIS_MAX_RANK;cpp->kappa++) {
       /* m*n = len
        * minimize 2*m*f + (kappa+1)*fu*n, we use f as an approximation for fu */
       ctx->m = round(sqrt(len*(cpp->kappa+1)/2.0));
@@ -39,21 +40,33 @@ static int init_polcomctx(polcomctx *ctx, size_t len) {
       ctx->normsq += (exp2(2*cpp->bu)*(cpp->fu - 1) + exp2(2*(LOGQ-(cpp->fu - 1)*cpp->bu)))/12*(cpp->kappa+1)*ctx->n;
       ctx->normsq *= N;
 
-      if(sis_secure(cpp->kappa,6*T*SLACK*exp2(cpp->bu)*sqrt(ctx->normsq)))
+      /* The formula above is a second-moment estimate, while the security
+       * check after evaluation uses the realized norm.  Leave headroom in
+       * the L2 quantum-128 ADPS16 schedule so a routine fluctuation cannot select a
+       * rank that the reducer will immediately reject. */
+      schedule_norm = sqrt(ctx->normsq);
+      if(sis_get_security_mode() == SIS_SECURITY_L2_QUANTUM128_ADPS16)
+        schedule_norm *= 1.25;
+
+      if(sis_secure(cpp->kappa,ctx->m*cpp->f,
+                    6*T*SLACK*exp2(cpp->bu)*schedule_norm))
         break;
     }
-    for(cpp->kappa1=1;cpp->kappa1<=32;cpp->kappa1++)
-      if(sis_secure(cpp->kappa1,2*SLACK*sqrt(ctx->normsq)))
+    for(cpp->kappa1=1;cpp->kappa1<=SIS_MAX_RANK;cpp->kappa1++)
+      if(sis_secure(cpp->kappa1,cpp->kappa*cpp->fu*ctx->n,
+                    2*SLACK*schedule_norm) &&
+         sis_secure(cpp->kappa1,cpp->fu*ctx->n,
+                    2*SLACK*schedule_norm))
         break;
 
-    if(cpp->kappa <= 32 && cpp->kappa1 <= 32)
+    if(cpp->kappa <= SIS_MAX_RANK && cpp->kappa1 <= SIS_MAX_RANK)
       break;
   }
-  if(cpp->kappa > 32) {
+  if(cpp->kappa > SIS_MAX_RANK) {
     fprintf(stderr,"ERROR in init_polcomctx(): Cannot make inner commitments secure!\n");
     return 1;
   }
-  if(cpp->kappa1 > 32) {
+  if(cpp->kappa1 > SIS_MAX_RANK) {
     fprintf(stderr,"ERROR in init_polcomctx(): Cannot make outer commitments secure!\n");
     return 2;
   }
@@ -101,6 +114,7 @@ void print_polcomctx_pp(const polcomctx *ctx) {
   const comparams *cpp = ctx->cpp;
 
   printf("Polynomial commitment context:\n");
+  printf("  SIS security policy: %s\n",sis_security_mode_name());
   printf("  Polynomial lengths: %zu\n",ctx->len);
   printf("  Lengths decomposition: %zu x %zu\n",ctx->m,ctx->n);
   printf("  Streaming polynomial: %s\n",(ctx->sx) ? "NO" : "YES");
@@ -112,22 +126,59 @@ void print_polcomctx_pp(const polcomctx *ctx) {
 }
 
 double print_polcomprf_pp(const polcomprf *pi) {
-  double s;
+  size_t wire_bytes;
+  double s,inner_norm,outer_norm;
   const comparams *cpp = pi->cpp;
 
   printf("Polynomial commitment evaluation proof:\n");
   printf("  Polynomial lengths: %zu\n",pi->len);
   printf("  Lengths decomposition: %zu x %zu\n",pi->m,pi->n);
-  printf("  Evaluation point: %ld\n",pi->x);
+  printf("  Evaluation point: %lld\n",(long long)pi->x);
   printf("  Commitment ranks: kappa = %zu; kappa1 = %zu\n",cpp->kappa,cpp->kappa1);
   printf("  Decomposition bases: b = %d; bu = %d\n",1 << cpp->b,1 << cpp->bu);
   printf("  Expansion factors: f = %zu; fu = %zu\n",cpp->f,cpp->fu);
   printf("  Witness norm: %.2f\n",sqrt(pi->normsq));
-  s  = 2*cpp->kappa1*N*LOGQ;
-  s /= 8192;
-  printf("  Proof size: %.2f KB\n",s);
+  inner_norm = 6*T*SLACK*exp2(cpp->bu)*sqrt(pi->normsq);
+  outer_norm = 2*SLACK*sqrt(pi->normsq);
+  printf("  SIS audit instances (actual post-evaluation norm):\n");
+  print_sis_audit_pp("greyhound-inner",cpp->kappa,pi->m*cpp->f,inner_norm);
+  print_sis_audit_pp("greyhound-outer-u1",cpp->kappa1,cpp->u1len,outer_norm);
+  print_sis_audit_pp("greyhound-outer-u2",cpp->kappa1,cpp->u2len,outer_norm);
+  wire_bytes = polcomprf_contextual_serialized_size(pi);
+  s = (double)wire_bytes/1024;
+  printf("  Contextual Greyhound proof encoding:\n");
+  printf("    Claimed witness norm: 8 bytes\n");
+  printf("    Evaluation opening u2: %zu bytes\n",wire_bytes-8);
+  printf("    Public commitment u1: excluded (verifier context)\n");
+  printf("    Framing and schedule parameters: excluded (verifier context)\n");
+  printf("    Exact total: %zu bytes\n",wire_bytes);
   printf("\n");
   return s;
+}
+
+typedef struct {
+  polcomctx *ctx;
+  const polz *s;
+  polx *outer;
+  size_t len;
+  size_t outer_stride;
+} polcom_commit_job;
+
+static void polcom_commit_row(size_t i, void *context) {
+  polcom_commit_job *job = context;
+  polcomctx *ctx = job->ctx;
+  const comparams *cpp = ctx->cpp;
+  const size_t m = ctx->m;
+  polx *sx = &ctx->sx[i*m*cpp->f];
+  polx inner[cpp->kappa*cpp->fu];
+
+  polzvec_decompose_topolxvec(sx,&job->s[i*m],MIN(m,job->len-i*m),m,cpp->f,cpp->b);
+  polxvec_mul_extension(inner,comkey,sx,m*cpp->f,cpp->kappa,1);
+  polxvec_decompose(&ctx->t[i*cpp->kappa*cpp->fu],inner,cpp->kappa,cpp->fu,cpp->bu);
+  polxvec_frompolyvec(inner,&ctx->t[i*cpp->kappa*cpp->fu],cpp->kappa*cpp->fu);
+  polxvec_mul_extension(&job->outer[i*cpp->kappa1],
+                        &comkey[i*job->outer_stride],inner,
+                        cpp->kappa*cpp->fu,cpp->kappa1,1);
 }
 
 int polcom_commit(polcomctx *ctx, const polz *s, size_t len) {
@@ -140,10 +191,9 @@ int polcom_commit(polcomctx *ctx, const polz *s, size_t len) {
   const size_t n = ctx->n;
   const comparams *cpp = ctx->cpp;
 
-  size_t i,j;
+  size_t i;
   __attribute__((aligned(16)))
   uint8_t hashbuf[cpp->kappa1*N*QBYTES];
-  polx t[cpp->kappa*cpp->fu];
   polx u[cpp->kappa1];
 
   init_comkey(MAX(m*cpp->f,n*extlen(cpp->kappa*cpp->fu,cpp->kappa1)));
@@ -155,7 +205,9 @@ int polcom_commit(polcomctx *ctx, const polz *s, size_t len) {
   polx (*sx)[m*cpp->f] = (polx (*)[m*cpp->f])ctx->sx;
 #endif
 
-  j = 0;
+#ifdef STREAM_WITNESS
+  size_t j = 0;
+  polx t[cpp->kappa*cpp->fu];
   for(i=0;i<n;i++) {
     /* inner commitments */
     polzvec_decompose_topolxvec(sx[i],&s[i*m],MIN(m,len-i*m),m,cpp->f,cpp->b);
@@ -171,6 +223,16 @@ int polcom_commit(polcomctx *ctx, const polz *s, size_t len) {
       polxvec_add(u,u,t,cpp->kappa1);
     }
   }
+#else
+  const size_t outer_stride = extlen(cpp->kappa*cpp->fu,cpp->kappa1);
+  polx *outer = _aligned_alloc(64,n*cpp->kappa1*sizeof(polx));
+  polcom_commit_job job = { ctx,s,outer,len,outer_stride };
+  parallel_for(n,m*cpp->f*cpp->kappa,polcom_commit_row,&job);
+  polxvec_copy(u,outer,cpp->kappa1);
+  for(i=1;i<n;i++)
+    polxvec_add(u,u,&outer[i*cpp->kappa1],cpp->kappa1);
+  free(outer);
+#endif
 
   if(!ctx->sx) free(sx);
   polzvec_frompolxvec(ctx->u1,u,cpp->kappa1);
@@ -388,11 +450,13 @@ int polcom_reduce(prncplstmnt *st, const polcomprf *pi) {
   uint8_t hashbuf[24+cpp->kappa1*N*QBYTES];
   polx *buf;
 
-  if(!sis_secure(cpp->kappa,6*T*SLACK*exp2(cpp->bu)*sqrt(pi->normsq))) {
+  if(!sis_secure(cpp->kappa,pi->m*cpp->f,
+                 6*T*SLACK*exp2(cpp->bu)*sqrt(pi->normsq))) {
     fprintf(stderr,"ERROR in polcom_reduce(): Inner commitments not secure\n");
     return 1;
   }
-  if(!sis_secure(cpp->kappa1,2*SLACK*sqrt(pi->normsq))) {
+  if(!sis_secure(cpp->kappa1,cpp->u1len,2*SLACK*sqrt(pi->normsq)) ||
+     !sis_secure(cpp->kappa1,cpp->u2len,2*SLACK*sqrt(pi->normsq))) {
     fprintf(stderr,"ERROR in polcom_reduce(): Outer commitments not secure\n");
     return 2;
   }

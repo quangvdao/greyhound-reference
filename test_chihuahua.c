@@ -6,6 +6,18 @@
 #include "chihuahua.h"
 #include "pack.h"
 
+static int proof_wire_copy(proof *dst, const proof *src) {
+  size_t size = proof_serialized_size(src);
+  uint8_t *wire = malloc(size);
+  int ret;
+
+  if(wire == NULL) return 1;
+  ret = proof_serialize(wire,size,src);
+  if(!ret) ret = proof_deserialize(dst,wire,size);
+  free(wire);
+  return ret;
+}
+
 static void prepare_linear(prncplstmnt *st, witness *wt) {
   size_t i,j,l;
   __attribute__((aligned(16)))
@@ -75,6 +87,7 @@ static int test_twolayer() {
   prncplstmnt st0 = {};
   statement st1 = {}, st2 = {};
   proof pi0 = {}, pi1 = {};
+  proof wirepi0 = {}, wirepi1 = {};
   witness wt0 = {}, wt1 = {}, wt2 = {};
   double size = 0;
 
@@ -95,6 +108,11 @@ static int test_twolayer() {
   }
   free_witness(&wt0);
   size += print_proof_pp(&pi0);
+  ret = proof_wire_copy(&wirepi0,&pi0);
+  if(ret) {
+    fprintf(stderr,"ERROR: Chihuahua proof wire round-trip failed: %d\n",ret);
+    goto end;
+  }
   print_statement_pp(&st1);
   ret = verify(&st1,&wt1);
   if(ret) {
@@ -103,7 +121,7 @@ static int test_twolayer() {
   }
 
   free_statement(&st1);
-  ret = principle_reduce(&st1,&pi0,&st0);
+  ret = principle_reduce(&st1,&wirepi0,&st0);
   free_prncplstmnt(&st0);
   if(ret) {
     fprintf(stderr,"ERROR: Chihuahua reduction failed: %d\n",ret);
@@ -122,6 +140,11 @@ static int test_twolayer() {
   }
   free_witness(&wt1);
   size += print_proof_pp(&pi1);
+  ret = proof_wire_copy(&wirepi1,&pi1);
+  if(ret) {
+    fprintf(stderr,"ERROR: Labrador proof wire round-trip failed: %d\n",ret);
+    goto end;
+  }
   print_statement_pp(&st2);
   ret = verify(&st2,&wt2);
   if(ret) {
@@ -130,7 +153,7 @@ static int test_twolayer() {
   }
 
   free_statement(&st2);
-  ret = reduce(&st2,&pi1,&st1);
+  ret = reduce(&st2,&wirepi1,&st1);
   free_statement(&st1);
   if(ret) {
     fprintf(stderr,"ERROR: Labrador reduction failed: %d\n",ret);
@@ -143,7 +166,7 @@ static int test_twolayer() {
   }
 
   size += print_witness_pp(&wt2);
-  printf("Total proof size: %.2f KB\n",size);
+  printf("Proof total: %.2f bytes\n",size*1024);
   printf("\n");
 
 end:
@@ -152,6 +175,8 @@ end:
   free_statement(&st2);
   free_proof(&pi0);
   free_proof(&pi1);
+  free_proof(&wirepi0);
+  free_proof(&wirepi1);
   free_witness(&wt0);
   free_witness(&wt1);
   free_witness(&wt2);

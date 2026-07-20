@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "data.h"
 #include "polx.h"
+#include "parallel.h"
 #include "poly.h"
 #include "polz.h"
 
@@ -378,24 +379,47 @@ void polxvec_scale_add(polx *r, const polx *a, size_t len, int64_t s) {
   polxvec_reduce(r,len);
 }
 
+typedef struct {
+  polx *c;
+  const polx *a;
+  const polx *b;
+  size_t len;
+  size_t deg;
+  size_t mult;
+} extension_job;
+
+static void mul_extension_task(size_t index, void *context) {
+  extension_job *job = context;
+  const size_t i = index/K;
+  const size_t j = index%K;
+
+  polyvec_pointwise_extension(&job->c[i].vec[j],&job->a->vec[j],
+                              &job->b[i].vec[j],job->len,K*job->mult,
+                              job->deg,&primes[j]);
+}
+
+static void collaps_extension_task(size_t index, void *context) {
+  extension_job *job = context;
+  const size_t i = index/K;
+  const size_t j = index%K;
+
+  polyvec_collaps_add_extension(&job->c[i].vec[j],&job->a[i].vec[j],
+                                &job->b->vec[j],job->len,K*job->mult,
+                                job->deg,&primes[j]);
+}
+
 size_t polxvec_mul_extension(polx *c, const polx *a, const polx *b, size_t len, size_t deg, size_t mult) {
-  size_t i,j,k = 0;
+  extension_job job = { c, a, b, len, deg, mult };
 
-  for(i=0;i<mult;i++)
-    for(j=0;j<K;j++)
-      k = polyvec_pointwise_extension(&c[i].vec[j],&a->vec[j],&b[i].vec[j],len,K*mult,deg,&primes[j]);
-
-  return k;
+  parallel_for(mult*K,len*deg,mul_extension_task,&job);
+  return extlen(len,deg);
 }
 
 size_t polxvec_collaps_add_extension(polx *c, const polx *a, const polx *b, size_t len, size_t deg, size_t mult) {
-  size_t i,j,k = 0;
+  extension_job job = { c, a, b, len, deg, mult };
 
-  for(i=0;i<mult;i++)
-    for(j=0;j<K;j++)
-      k = polyvec_collaps_add_extension(&c[i].vec[j],&a[i].vec[j],&b->vec[j],len,K*mult,deg,&primes[j]);
-
-  return k;
+  parallel_for(mult*K,len*deg,collaps_extension_task,&job);
+  return extlen(len,deg);
 }
 
 void polxvec_decompose(poly *r, const polx *a, size_t len, size_t t, size_t d) {
@@ -476,4 +500,3 @@ void polxvec_flip(polx *r, const polx *a, size_t len) {
   for(i=0;i<K;i++)
     polyvec_flip_ntt(&r->vec[i],&a->vec[i],len,K,&primes[i]);
 }
-

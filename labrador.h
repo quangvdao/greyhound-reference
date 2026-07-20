@@ -66,8 +66,30 @@ typedef struct {
   poly **s;
 } witness;
 
-__attribute__((const))
-int sis_secure(size_t rank, double norm);
+typedef enum {
+  SIS_SECURITY_LEGACY = 0,
+  SIS_SECURITY_L2_QUANTUM128_ADPS16 = 1,
+  SIS_SECURITY_INVALID = 2
+} sis_security_mode;
+
+#define SIS_MAX_RANK 128
+
+typedef struct {
+  double quantum_bits;
+  size_t beta;
+  size_t lattice_dimension;
+  int valid;
+  int finite;
+  int trivially_easy;
+} sis_estimate;
+
+void sis_set_security_mode(sis_security_mode mode);
+sis_security_mode sis_get_security_mode(void);
+const char *sis_security_mode_name(void);
+sis_estimate sis_estimate_l2_core_svp_adps16(size_t rank, size_t width,
+                                             double l2_bound);
+int sis_secure(size_t rank, size_t width, double l2_bound);
+void print_sis_audit_pp(const char *role, size_t rank, size_t width, double l2_bound);
 #define init_comkey NAMESPACE(init_comkey)
 __attribute__((visibility("default")))
 void init_comkey(size_t n);
@@ -98,6 +120,34 @@ void free_witness(witness *wt);
 double print_proof_pp(const proof *pi);
 void print_statement_pp(const statement *pi);
 double print_witness_pp(const witness *wt);
+
+/* Canonical proof wire format (little-endian, versioned, self-describing).
+ * The size includes proof metadata, the 256 signed JL coordinates, and every
+ * fixed-width ring-element payload.  proof_deserialize expects a zeroed or
+ * previously freed destination. */
+size_t proof_serialized_size(const proof *pi);
+int proof_serialize(uint8_t *out, size_t outlen, const proof *pi);
+int proof_deserialize(proof *pi, const uint8_t *in, size_t inlen);
+
+/* Tight context-dependent encoding.  Shape and parameter data are supplied by
+ * a trusted schedule context and are not repeated on the wire. */
+size_t proof_contextual_serialized_size(const proof *pi);
+int proof_serialize_contextual(uint8_t *out, size_t outlen, const proof *pi);
+int proof_deserialize_contextual(proof *pi, const proof *shape,
+                                 const uint8_t *in, size_t inlen,
+                                 size_t *consumed);
+
+/* Canonical terminal-witness wire format.  Signed int16 coefficients are
+ * encoded per witness part with the unique size-minimizing Golomb-Rice
+ * parameter; decoding recomputes norms and rejects non-canonical encodings. */
+size_t witness_serialized_size(const witness *wt);
+int witness_serialize(uint8_t *out, size_t outlen, const witness *wt);
+int witness_deserialize(witness *wt, const uint8_t *in, size_t inlen);
+size_t witness_contextual_serialized_size(const witness *wt);
+int witness_serialize_contextual(uint8_t *out, size_t outlen, const witness *wt);
+int witness_deserialize_contextual(witness *wt, const witness *shape,
+                                   const uint8_t *in, size_t inlen,
+                                   size_t *consumed);
 
 size_t commit_raw(polx *u, poly *t, size_t r, size_t n, const polx s[r][n],
                   size_t off, const comparams *cpp, int tail);

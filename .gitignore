@@ -4,6 +4,8 @@ test_ntt
 test_poly
 test_polz
 test_jlproj
+test_sis_estimator
+test_proof_wire
 test_chihuahua
 test_dachshund
 test_greyhound

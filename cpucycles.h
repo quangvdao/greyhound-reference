@@ -3,6 +3,15 @@
 
 #include <stdint.h>
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <mach/mach_time.h>
+
+static inline uint64_t cpucycles(void) {
+  return mach_absolute_time();
+}
+
+#else
+
 //#define USE_RDPMC
 
 #ifdef USE_RDPMC  /* Needs echo 2 > /sys/devices/cpu/rdpmc */
@@ -27,6 +36,8 @@ static inline uint64_t cpucycles(void) {
 
   return result;
 }
+
+#endif
 
 #endif
 

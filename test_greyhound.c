@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 #include "malloc.h"
@@ -8,6 +9,13 @@
 #include "chihuahua.h"
 #include "pack.h"
 #include "greyhound.h"
+
+static double wall_time(void) {
+  struct timespec t;
+
+  clock_gettime(CLOCK_MONOTONIC,&t);
+  return (double)t.tv_sec+1e-9*t.tv_nsec;
+}
 
 static int test_polcom(size_t len) {
   int ret;
@@ -62,11 +70,15 @@ end:
 static int test_pack(size_t len) {
   int ret;
   int64_t x,y;
-  clock_t t;
+  double t;
+  size_t wire_bytes;
+  uint8_t *wire = NULL,*wire2 = NULL;
   polz *s;
   polcomctx ctx = {};
   polcomprf pi = {};
+  polcomprf decoded_pi = {};
   composite p = {};
+  composite decoded = {};
   __attribute__((aligned(16)))
   uint8_t seed[16];
 
@@ -79,32 +91,78 @@ static int test_pack(size_t len) {
   x = 43;
   y = polzvec_eval(s,len,x);
 
-  t = clock();
+  t = wall_time();
   polcom_commit(&ctx,s,len);
-  t = clock() - t;
-  printf("Greyhound Pack commit time: %.4fs\n\n",(double)t/CLOCKS_PER_SEC);
+  t = wall_time()-t;
+  printf("Greyhound Pack commit wall time: %.4fs\n\n",t);
   print_polcomctx_pp(&ctx);
 
-  composite_prove_polcom(&p,&pi,&ctx,x,y);
-  ret = composite_verify_polcom(&p,&pi);
+  ret = composite_prove_polcom(&p,&pi,&ctx,x,y);
+  if(ret) goto end;
+  wire_bytes = greyhound_pack_contextual_serialized_size(&pi,&p);
+  wire = malloc(wire_bytes);
+  wire2 = malloc(wire_bytes);
+  if(!wire || !wire2 || greyhound_pack_serialize_contextual(wire,wire_bytes,&pi,&p) ||
+     greyhound_pack_deserialize_contextual(&decoded_pi,&decoded,&pi,&p,wire,wire_bytes) ||
+     greyhound_pack_serialize_contextual(wire2,wire_bytes,&decoded_pi,&decoded) ||
+     memcmp(wire,wire2,wire_bytes)) {
+    printf("ERROR: contextual Greyhound proof round-trip failed\n");
+    ret = 1;
+    goto end;
+  }
+  {
+    polcomprf bad_pi = {};
+    composite bad = {};
+
+    size_t top_bytes = polcomprf_contextual_serialized_size(&pi);
+    wire2[top_bytes] = 255;
+    if(!greyhound_pack_deserialize_contextual(&bad_pi,&bad,&pi,&p,wire2,wire_bytes)) {
+      printf("ERROR: invalid contextual Rice parameter was accepted\n");
+      free_polcomprf(&bad_pi);
+      free_composite(&bad);
+      ret = 1;
+      goto end;
+    }
+    wire2[top_bytes] = wire[top_bytes];
+    if(!greyhound_pack_deserialize_contextual(&bad_pi,&bad,&pi,&p,wire2,wire_bytes-1)) {
+      printf("ERROR: truncated contextual proof was accepted\n");
+      free_polcomprf(&bad_pi);
+      free_composite(&bad);
+      ret = 1;
+      goto end;
+    }
+  }
+  printf("Contextual Greyhound proof size: %zu bytes\n\n",wire_bytes);
+  ret = composite_verify_polcom(&decoded,&decoded_pi);
   if(ret)
     printf("ERROR: verify_composite_polcom failed: %d\n",ret);
 
+end:
+  free(wire);
+  free(wire2);
   free(s);
   free_polcomctx(&ctx);
   free_polcomprf(&pi);
+  free_polcomprf(&decoded_pi);
   free_composite(&p);
+  free_composite(&decoded);
   return ret;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
   int ret;
   size_t len;
 
-  len = 1 << 19;
+  len = argc > 1 ? strtoull(argv[1],NULL,0) : (1 << 19);
+  if(!len) {
+    fprintf(stderr,"Usage: %s [number-of-64-coefficient-polynomials]\n",argv[0]);
+    return 1;
+  }
 
-  ret = test_polcom(len);
-  if(ret) goto end;
+  if(!getenv("GREYHOUND_BENCH_PACK_ONLY")) {
+    ret = test_polcom(len);
+    if(ret) goto end;
+  }
   ret = test_pack(len);
   if(ret) goto end;
 

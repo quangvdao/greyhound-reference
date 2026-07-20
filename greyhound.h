@@ -45,4 +45,13 @@ int64_t polzvec_eval(const polz *a, size_t len, int64_t x);
 void polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, int64_t y);
 int polcom_reduce(prncplstmnt *st, const polcomprf *pi);
 
+size_t polcomprf_serialized_size(const polcomprf *pi);
+int polcomprf_serialize(uint8_t *out, size_t outlen, const polcomprf *pi);
+int polcomprf_deserialize(polcomprf *pi, const uint8_t *in, size_t inlen);
+size_t polcomprf_contextual_serialized_size(const polcomprf *pi);
+int polcomprf_serialize_contextual(uint8_t *out, size_t outlen, const polcomprf *pi);
+int polcomprf_deserialize_contextual(polcomprf *pi, const polcomprf *context,
+                                     const uint8_t *in, size_t inlen,
+                                     size_t *consumed);
+
 #endif

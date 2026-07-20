@@ -135,7 +135,7 @@ static int test_twolayer() {
   }
 
   size += print_witness_pp(&wt2);
-  printf("Total proof size: %.2f KB\n",size);
+  printf("Proof total: %.2f bytes\n",size*1024);
   printf("\n");
 
 end:
