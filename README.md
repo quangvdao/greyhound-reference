@@ -43,6 +43,34 @@ the accounting boundary explicitly instead of claiming a one-to-one mapping.
 The security mode is a concrete parameter-estimation policy, not an end-to-end
 security proof or implementation audit.
 
+## Benchmark results
+
+The portable backend was measured on an Apple M4 MacBook Air with 10 CPU cores
+and 24 GB RAM under `LABRADOR_SIS_SECURITY=l2-quantum128-adps16`. Exact
+contextual proofs remain between 56,477 and 64,665 bytes across degrees 2^20
+through 2^28, while every selected SIS instance meets the configured 128-bit
+quantum ADPS16 estimate.
+
+| Degree | Proof bytes | Fold bytes | Tail bytes (`t + h + z`) | Minimum quantum bits |
+|---:|---:|---:|---:|---:|
+| 2^20 | 56,477 | 23,005 | 33,472 | 128.790 |
+| 2^21 | 56,700 | 23,283 | 33,417 | 129.585 |
+| 2^22 | 59,398 | 26,802 | 32,596 | 130.380 |
+| 2^23 | 59,076 | 26,828 | 32,248 | 129.585 |
+| 2^24 | 58,885 | 26,847 | 32,038 | 129.320 |
+| 2^25 | 60,248 | 27,647 | 32,601 | 128.260 |
+| 2^26 | 62,266 | 28,692 | 33,574 | 129.055 |
+| 2^27 | 64,665 | 32,261 | 32,404 | 128.790 |
+| 2^28 | 64,626 | 32,245 | 32,381 | 129.585 |
+
+Here the comparison tail is the terminal inner commitment `t`, linear
+relation term `h`, and folded witness `z`; remaining terminal
+proof-of-relation data stays with the fold bytes. See [BENCHMARKS.md](BENCHMARKS.md)
+for the exact `t/h/z` split, every fold's parameters and SIS estimate, raw wire
+composition, runtimes, reproduction commands, and the explanation of the
+non-monotonic size curve. The 2^28 measurement uses the streaming witness path,
+so its runtime is not directly comparable to the parallel non-streaming rows.
+
 ## What this fork adds
 
 - A scalar-capable generic C/SIMDe backend for non-AVX-512 machines, including
