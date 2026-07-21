@@ -185,6 +185,7 @@ end:
 
 static int test_pack() {
   int ret;
+  size_t i;
   prncplstmnt st = {};
   witness wt = {};
   composite p = {};
@@ -207,6 +208,22 @@ static int test_pack() {
   ret = composite_verify_principle(&p,&st);
   if(ret) {
     fprintf(stderr,"ERROR: Chihuahua composite verifaction failed: %d\n",ret);
+    goto end;
+  }
+  for(i=0;i<p.l;i++) {
+    uint32_t foldnonce = p.pi[i]->foldnonce;
+    p.pi[i]->foldnonce = foldnonce == FOLD_GRIND_MAX_ATTEMPTS-1
+                       ? foldnonce-1 : foldnonce+1;
+    if(composite_verify_principle(&p,&st) == 0) {
+      fprintf(stderr,"ERROR: Modified fold %zu grind nonce was accepted\n",i+1);
+      ret = 1;
+      goto end;
+    }
+    p.pi[i]->foldnonce = foldnonce;
+  }
+  ret = composite_verify_principle(&p,&st);
+  if(ret) {
+    fprintf(stderr,"ERROR: Restored fold grind nonces did not verify: %d\n",ret);
     goto end;
   }
 

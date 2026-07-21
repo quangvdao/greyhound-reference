@@ -411,7 +411,11 @@ int principle_prove(statement *ost, witness *owt, proof *pi, const prncplstmnt *
     free_constraint(cnst);
 
     aggregate_sparsecnst(ost,pi,ist->cnst,ist->k);
-    amortize(ost,owt,pi,sx);
+    ret = amortize(ost,owt,pi,sx);
+    if(ret) {
+      ret += 20;
+      goto err;
+    }
     free(buf);
     buf = NULL;
   }

@@ -5,8 +5,8 @@
 #include "malloc.h"
 #include "labrador.h"
 
-#define PROOF_WIRE_HEADER_BYTES 120
-#define PROOF_WIRE_VERSION 2
+#define PROOF_WIRE_HEADER_BYTES 124
+#define PROOF_WIRE_VERSION 3
 #define JL_COORDINATES 256
 #define MAX_RICE_K 31
 
@@ -184,7 +184,8 @@ int proof_serialize(uint8_t *out, size_t outlen, const proof *pi) {
   uint64_t jlbits;
   unsigned rice_k;
 
-  if(pi == NULL || pi->n == NULL || pi->u1 == NULL) return 1;
+  if(pi == NULL || pi->n == NULL || pi->u1 == NULL ||
+     pi->foldnonce >= FOLD_GRIND_MAX_ATTEMPTS) return 1;
   const size_t values[10] = {
     pi->cpp->f,pi->cpp->fu,pi->cpp->fg,
     pi->cpp->b,pi->cpp->bu,pi->cpp->bg,
@@ -210,6 +211,7 @@ int proof_serialize(uint8_t *out, size_t outlen, const proof *pi) {
   for(i=0;i<10;i++,off+=8) put64(&out[off],params[i]);
   put64(&out[104],pi->jlnonce);
   put64(&out[112],pi->normsq);
+  put32(&out[120],pi->foldnonce);
 
   off = PROOF_WIRE_HEADER_BYTES;
   for(i=0;i<pi->r;i++,off+=16) {
@@ -265,6 +267,9 @@ int proof_deserialize(proof *pi, const uint8_t *in, size_t inlen) {
   pi->cpp->u2len = (size_t)param[9];
   pi->jlnonce = (size_t)get64(&in[104]);
   pi->normsq = get64(&in[112]);
+  pi->foldnonce = get32(&in[120]);
+  if(pi->foldnonce >= FOLD_GRIND_MAX_ATTEMPTS)
+    return 6;
 
   fixed = PROOF_WIRE_HEADER_BYTES;
   if(add_size(&fixed,pi->r,16)) return 7;
@@ -300,7 +305,7 @@ int proof_deserialize(proof *pi, const uint8_t *in, size_t inlen) {
 }
 
 size_t proof_contextual_serialized_size(const proof *pi) {
-  size_t total=17,payload;
+  size_t total=21,payload;
   uint64_t bits;
 
   if(!pi || !pi->n || !pi->u1) return 0;
@@ -318,11 +323,15 @@ int proof_serialize_contextual(uint8_t *out, size_t outlen, const proof *pi) {
   uint64_t bits;
   unsigned k;
 
-  if(!out || outlen != proof_contextual_serialized_size(pi)) return 1;
+  if(!out || outlen != proof_contextual_serialized_size(pi) ||
+     pi->foldnonce >= FOLD_GRIND_MAX_ATTEMPTS) return 1;
   k=rice_parameter(pi->p,&bits); jlbytes=(size_t)((bits+7)/8);
   out[0]=(uint8_t)k; put64(&out[1],pi->jlnonce); put64(&out[9],pi->normsq);
-  if(rice_encode(&out[17],jlbytes,pi->p,k)) return 2;
-  off=17+jlbytes;
+  off=17;
+  put32(&out[off],pi->foldnonce);
+  off+=4;
+  if(rice_encode(&out[off],jlbytes,pi->p,k)) return 2;
+  off+=jlbytes;
   polzvec_bitpack(&out[off],pi->u1,pi->cpp->u1len);
   off+=pi->cpp->u1len*N*QBYTES;
   polzvec_bitpack(&out[off],pi->u2,pi->cpp->u2len);
@@ -340,27 +349,31 @@ int proof_deserialize_contextual(proof *pi, const proof *shape,
   void *buf;
 
   if(!pi || !shape || !in || !consumed || !shape->r || !shape->n ||
-     !shape->nu || inlen<17) return 1;
+     !shape->nu || inlen<21) return 1;
   k=in[0]; nonce=get64(&in[1]);
   if(k>MAX_RICE_K || nonce>SIZE_MAX ||
      shape->r>SIZE_MAX/(2*sizeof(size_t)) ||
      shape->cpp->u1len > SIZE_MAX-shape->cpp->u2len-LIFTS) return 2;
   payload=shape->cpp->u1len+shape->cpp->u2len+LIFTS;
-  if(payload > (SIZE_MAX-17)/(N*QBYTES)) return 2;
+  off=17;
+  if(get32(&in[off]) >= FOLD_GRIND_MAX_ATTEMPTS) return 2;
+  off+=4;
+  if(payload > (SIZE_MAX-off)/(N*QBYTES)) return 2;
 
   memset(pi,0,sizeof(*pi)); pi->r=shape->r; pi->tail=shape->tail;
   *pi->cpp=*shape->cpp; pi->jlnonce=(size_t)nonce; pi->normsq=get64(&in[9]);
+  pi->foldnonce=get32(&in[17]);
   buf=_malloc(2*pi->r*sizeof(size_t)); pi->n=buf; pi->nu=&pi->n[pi->r];
   memcpy(pi->n,shape->n,pi->r*sizeof(size_t));
   memcpy(pi->nu,shape->nu,pi->r*sizeof(size_t));
-  if(rice_decode_prefix(pi->p,&in[17],inlen-17,k,&jlbytes) ||
+  if(rice_decode_prefix(pi->p,&in[off],inlen-off,k,&jlbytes) ||
      rice_parameter(pi->p,NULL)!=k) goto err;
-  if(payload*N*QBYTES>SIZE_MAX-17-jlbytes) goto err;
-  total=17+jlbytes+payload*N*QBYTES;
+  if(payload*N*QBYTES>SIZE_MAX-off-jlbytes) goto err;
+  total=off+jlbytes+payload*N*QBYTES;
   if(total>inlen) goto err;
   buf=_aligned_alloc(64,payload*sizeof(polz));
   pi->u1=buf; pi->u2=&pi->u1[pi->cpp->u1len]; pi->bb=&pi->u2[pi->cpp->u2len];
-  off=17+jlbytes;
+  off+=jlbytes;
   for(i=0;i<payload;i++,off+=N*QBYTES) polz_bitunpack(&pi->u1[i],&in[off]);
   *consumed=total;
   return 0;

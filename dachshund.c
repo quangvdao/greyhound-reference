@@ -456,6 +456,7 @@ int simple_prove(statement *ost, witness *owt, proof *pi, commitment *com,
 
     free(ewt->s[ewt->r-1]);
     free(ewt->n);
+    ewt->n = NULL;
 
     init_constraint_raw(cnst,ost->r,ost->n,1,0);
     for(i=0;i<LIFTS;i++) {
@@ -469,7 +470,11 @@ int simple_prove(statement *ost, witness *owt, proof *pi, commitment *com,
 
     simple_aggregate(ost,pi,com,ist);
     aggregate_sparsecnst(ost,pi,ist->cnst,ist->k);
-    amortize(ost,owt,pi,sx);
+    ret = amortize(ost,owt,pi,sx);
+    if(ret) {
+      ret += 30;
+      goto err;
+    }
     free(buf);
     buf = NULL;
   }

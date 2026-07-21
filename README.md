@@ -47,21 +47,21 @@ security proof or implementation audit.
 
 The portable backend was measured on an Apple M4 MacBook Air with 10 CPU cores
 and 24 GB RAM under `LABRADOR_SIS_SECURITY=l2-quantum128-adps16`. Exact
-contextual proofs remain between 56,477 and 64,665 bytes across degrees 2^20
+contextual proofs remain between 56,505 and 64,701 bytes across degrees 2^20
 through 2^28, while every selected SIS instance meets the configured 128-bit
 quantum ADPS16 estimate.
 
 | Degree | Proof bytes | Fold bytes | Tail bytes (`t + h + z`) | Minimum quantum bits |
 |---:|---:|---:|---:|---:|
-| 2^20 | 56,477 | 23,005 | 33,472 | 128.790 |
-| 2^21 | 56,700 | 23,283 | 33,417 | 129.585 |
-| 2^22 | 59,398 | 26,802 | 32,596 | 130.380 |
-| 2^23 | 59,076 | 26,828 | 32,248 | 129.585 |
-| 2^24 | 58,885 | 26,847 | 32,038 | 129.320 |
-| 2^25 | 60,248 | 27,647 | 32,601 | 128.260 |
-| 2^26 | 62,266 | 28,692 | 33,574 | 129.055 |
-| 2^27 | 64,665 | 32,261 | 32,404 | 128.790 |
-| 2^28 | 64,626 | 32,245 | 32,381 | 129.585 |
+| 2^20 | 56,505 | 23,033 | 33,472 | 128.790 |
+| 2^21 | 56,728 | 23,311 | 33,417 | 129.585 |
+| 2^22 | 59,430 | 26,834 | 32,596 | 130.380 |
+| 2^23 | 59,108 | 26,860 | 32,248 | 129.585 |
+| 2^24 | 58,917 | 26,879 | 32,038 | 129.320 |
+| 2^25 | 60,280 | 27,679 | 32,601 | 128.260 |
+| 2^26 | 62,298 | 28,724 | 33,574 | 129.055 |
+| 2^27 | 64,701 | 32,297 | 32,404 | 128.790 |
+| 2^28 | 64,662 | 32,281 | 32,381 | 129.585 |
 
 Here the comparison tail is the terminal inner commitment `t`, linear
 relation term `h`, and folded witness `z`; remaining terminal
@@ -152,10 +152,17 @@ the local Euclidean SIS estimator and the ADPS16 quantum core-SVP cost
 `log2(operations) = 0.265 * beta`.
 
 The selected inner and outer commitment ranks are increased until all matrix
-roles pass, and verification repeats the same checks. Reports include the
-scalar SIS dimensions, Euclidean collision bound, optimized lattice dimension,
-block size `beta`, and estimated quantum cost. Unknown nonempty policy names
-fail closed.
+roles pass, and verification repeats the same checks. Every norm-producing
+fold—the Greyhound root, ordinary Labrador levels, and the terminal level—also
+grinds a transcript-bound 32-bit nonce until the realized response satisfies
+all of that level's inner and outer SIS predicates. Ordinary levels keep their
+commitments fixed and recompute only the folding challenges and `z`. Nonce zero
+preserves the original transcript exactly; retries are domain-separated. The
+terminal level keeps `t` fixed and recomputes its dependent sequential `h`,
+challenge, and `z` chain. Search is deterministic from nonce zero and capped at
+4096 attempts per level. Reports include the scalar SIS dimensions, Euclidean
+collision bound, optimized lattice dimension, block size `beta`, and estimated
+quantum cost. Unknown nonempty policy names fail closed.
 
 This is a concrete parameter-estimation policy, not a claim that the full
 protocol or implementation has received a security audit. Run its regression

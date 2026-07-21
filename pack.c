@@ -209,7 +209,9 @@ int composite_prove_polcom(composite *p, polcomprf *ppi, polcomctx *ctx, uint32_
   p->pi[p->l] = _malloc(sizeof(proof));
 
   t = wall_time();
-  polcom_eval(&twt[1],ppi,ctx,x,y);
+  ret = polcom_eval(&twt[1],ppi,ctx,x,y);
+  if(ret)
+    goto err;
   ret = polcom_reduce(tst0,ppi);
   if(ret)
     goto err;

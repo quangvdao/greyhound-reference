@@ -39,6 +39,7 @@ typedef struct {
   comparams cpp[1];  // commitment parameters
   polz *u1;          // outer commitment 1 (kappa1)
   size_t jlnonce;    // JL matrix nonce
+  uint32_t foldnonce; // folding-challenge grind nonce
   int32_t p[256];    // JL projection
   polz *bb;          // int to pol lifting pols (LIFTS)
   polz *u2;          // outer commitment 2 (kappa1)
@@ -73,6 +74,7 @@ typedef enum {
 } sis_security_mode;
 
 #define SIS_MAX_RANK 128
+#define FOLD_GRIND_MAX_ATTEMPTS 4096
 
 typedef struct {
   double quantum_bits;
@@ -165,7 +167,7 @@ void collaps_jlproj(constraint *cnst, statement *st, const proof *pi, const uint
 void lift_aggregate_zqcnst(statement *ost, proof *pi, size_t i, constraint *cnst, const polx sx[ost->r][ost->n]);
 void reduce_lift_aggregate_zqcnst(statement *ost, const proof *pi, size_t i, const constraint *cnst);
 
-void amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]);
+int amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]);
 int reduce_amortize(statement *ost, const proof *pi);
 
 int prove(statement *ost, witness *owt, proof *pi, const statement *ist, const witness *iwt, int tail);

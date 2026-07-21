@@ -90,6 +90,7 @@ void free_polcomctx(polcomctx *ctx) {
   free(ctx->t);
   //free(ctx->u1); // u1 free'd when freeing proof
   ctx->s = NULL;
+  ctx->sx = NULL;
   ctx->t = NULL;
 }
 
@@ -100,6 +101,7 @@ static void init_polcomprf(polcomprf *pi, const polcomctx *ctx, uint32_t x, uint
   pi->x = x;
   pi->y = y;
   *pi->cpp = *ctx->cpp;
+  pi->foldnonce = 0;
   pi->u1 = ctx->u1;
   pi->u2 = _aligned_alloc(64,ctx->cpp->kappa1*sizeof(polz));
 }
@@ -138,6 +140,9 @@ double print_polcomprf_pp(const polcomprf *pi) {
   printf("  Decomposition bases: b = %d; bu = %d\n",1 << cpp->b,1 << cpp->bu);
   printf("  Expansion factors: f = %zu; fu = %zu\n",cpp->f,cpp->fu);
   printf("  Witness norm: %.2f\n",sqrt(pi->normsq));
+  printf("  Folding challenge grind:\n");
+  printf("    Accepted nonce: %u (candidate %u of at most %u)\n",
+         pi->foldnonce,pi->foldnonce+1,FOLD_GRIND_MAX_ATTEMPTS);
   inner_norm = 6*T*SLACK*exp2(cpp->bu)*sqrt(pi->normsq);
   outer_norm = 2*SLACK*sqrt(pi->normsq);
   printf("  SIS audit instances (actual post-evaluation norm):\n");
@@ -147,8 +152,8 @@ double print_polcomprf_pp(const polcomprf *pi) {
   wire_bytes = polcomprf_contextual_serialized_size(pi);
   s = (double)wire_bytes/1024;
   printf("  Contextual Greyhound proof encoding:\n");
-  printf("    Claimed witness norm: 8 bytes\n");
-  printf("    Evaluation opening u2: %zu bytes\n",wire_bytes-8);
+  printf("    Claimed witness norm + fold grind nonce: 12 bytes\n");
+  printf("    Evaluation opening u2: %zu bytes\n",wire_bytes-12);
   printf("    Public commitment u1: excluded (verifier context)\n");
   printf("    Framing and schedule parameters: excluded (verifier context)\n");
   printf("    Exact total: %zu bytes\n",wire_bytes);
@@ -332,14 +337,26 @@ int64_t polzvec_eval(const polz *a, size_t len, int64_t x) {
   return y;
 }
 
-void polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, int64_t y) {
+static int polcom_commitments_secure(const polcomprf *pi) {
+  const comparams *cpp = pi->cpp;
+  double inner_norm = 6*T*SLACK*exp2(cpp->bu)*sqrt((double)pi->normsq);
+  double outer_norm = 2*SLACK*sqrt((double)pi->normsq);
+
+  return sis_secure(cpp->kappa,pi->m*cpp->f,inner_norm) &&
+         sis_secure(cpp->kappa1,cpp->u1len,outer_norm) &&
+         sis_secure(cpp->kappa1,cpp->u2len,outer_norm);
+}
+
+int polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, int64_t y) {
   size_t i,j,k;
+  uint32_t nonce;
   const comparams *cpp = ctx->cpp;
   const size_t m = ctx->m;
   const size_t n = ctx->n;
   int64_t xx[m];  // xx[i] = x^(N*i)
   __attribute__((aligned(16)))
-  uint8_t hashbuf[16+(2+cpp->kappa1*N)*QBYTES];
+  uint8_t hashbuf[16+(2+cpp->kappa1*N)*QBYTES+12];
+  uint8_t challenge_hash[32];
 
 #ifdef STREAM_WITNESS
   polx (*sx)[0] = _aligned_alloc(64,m*cpp->f*sizeof(polx));
@@ -409,30 +426,49 @@ void polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, in
   polxvec_mul_extension(tmp,comkey,tmp,wt->n[3],cpp->kappa1,1);
   polzvec_frompolxvec(pi->u2,tmp,cpp->kappa1);
   polzvec_bitpack(&hashbuf[24],pi->u2,cpp->kappa1);
+  const size_t grind = 24+cpp->kappa1*N*QBYTES;
+  memcpy(&hashbuf[grind],"GHfoldv1",8);
 
   /* ammortize s */
   polx *c = &tmp[0];
   polx *z = &tmp[n];
-  shake128(hashbuf,32,hashbuf,sizeof(hashbuf));
-  polxvec_challenge(c,n,&hashbuf[16],0);
-  if(!ctx->sx)
-    polzvec_decompose_topolxvec(sx[0],&ctx->s[0],m,m,cpp->f,cpp->b);
-  polxvec_polx_mul(z,&c[0],sx[0],m*cpp->f);
-  for(i=1;i<n;i++) {
+  for(nonce=0;nonce<FOLD_GRIND_MAX_ATTEMPTS;nonce++) {
+    hashbuf[grind+8] = (uint8_t)nonce;
+    hashbuf[grind+9] = (uint8_t)(nonce >> 8);
+    hashbuf[grind+10] = (uint8_t)(nonce >> 16);
+    hashbuf[grind+11] = (uint8_t)(nonce >> 24);
+    shake128(challenge_hash,32,hashbuf,nonce ? sizeof(hashbuf) : grind);
+    polxvec_challenge(c,n,&challenge_hash[16],0);
     if(!ctx->sx)
-      polzvec_decompose_topolxvec(sx[i],&ctx->s[i*m],MIN(m,ctx->len-i*m),m,cpp->f,cpp->b);
-    polxvec_polx_mul_add(z,&c[i],sx[i],m*cpp->f);
-  }
+      polzvec_decompose_topolxvec(sx[0],&ctx->s[0],m,m,cpp->f,cpp->b);
+    polxvec_polx_mul(z,&c[0],sx[0],m*cpp->f);
+    for(i=1;i<n;i++) {
+      if(!ctx->sx)
+        polzvec_decompose_topolxvec(sx[i],&ctx->s[i*m],MIN(m,ctx->len-i*m),m,cpp->f,cpp->b);
+      polxvec_polx_mul_add(z,&c[i],sx[i],m*cpp->f);
+    }
 
-  polxvec_decompose(wt->s[0],z,wt->n[0],2,cpp->bu);
-  pi->normsq = 0;
-  for(i=0;i<wt->r;i++) {
-    wt->normsq[i] = polyvec_sprodz(wt->s[i],wt->s[i],wt->n[i]);
-    pi->normsq += wt->normsq[i];
+    polxvec_decompose(wt->s[0],z,wt->n[0],2,cpp->bu);
+    pi->normsq = 0;
+    for(i=0;i<wt->r;i++) {
+      wt->normsq[i] = polyvec_sprodz(wt->s[i],wt->s[i],wt->n[i]);
+      pi->normsq += wt->normsq[i];
+    }
+    if(polcom_commitments_secure(pi))
+      break;
   }
 
   if(!ctx->sx) free(sx);
   free(tmp);
+  if(nonce == FOLD_GRIND_MAX_ATTEMPTS) {
+    fprintf(stderr,"ERROR in polcom_eval(): Fold grind exhausted %u attempts\n",
+            FOLD_GRIND_MAX_ATTEMPTS);
+    free_witness(wt);
+    free_polcomprf(pi);
+    return 1;
+  }
+  pi->foldnonce = nonce;
+  return 0;
 }
 
 int polcom_reduce(prncplstmnt *st, const polcomprf *pi) {
@@ -447,17 +483,16 @@ int polcom_reduce(prncplstmnt *st, const polcomprf *pi) {
   int64_t xvec[N], xvec2[N];
   size_t stn[4], len;
   __attribute__((aligned(16)))
-  uint8_t hashbuf[24+cpp->kappa1*N*QBYTES];
+  uint8_t hashbuf[24+cpp->kappa1*N*QBYTES+12];
+  uint8_t challenge_hash[32];
   polx *buf;
 
-  if(!sis_secure(cpp->kappa,pi->m*cpp->f,
-                 6*T*SLACK*exp2(cpp->bu)*sqrt(pi->normsq))) {
-    fprintf(stderr,"ERROR in polcom_reduce(): Inner commitments not secure\n");
+  if(!polcom_commitments_secure(pi)) {
+    fprintf(stderr,"ERROR in polcom_reduce(): Commitments not secure\n");
     return 1;
   }
-  if(!sis_secure(cpp->kappa1,cpp->u1len,2*SLACK*sqrt(pi->normsq)) ||
-     !sis_secure(cpp->kappa1,cpp->u2len,2*SLACK*sqrt(pi->normsq))) {
-    fprintf(stderr,"ERROR in polcom_reduce(): Outer commitments not secure\n");
+  if(pi->foldnonce >= FOLD_GRIND_MAX_ATTEMPTS) {
+    fprintf(stderr,"ERROR in polcom_reduce(): Invalid fold grind nonce\n");
     return 2;
   }
 
@@ -485,9 +520,16 @@ int polcom_reduce(prncplstmnt *st, const polcomprf *pi) {
   hashbuf[22] = y >> 16;
   hashbuf[23] = y >> 24;
   polzvec_bitpack(&hashbuf[24],pi->u2,cpp->kappa1);
-  shake128(hashbuf,32,hashbuf,sizeof(hashbuf));
-  memcpy(st->h,hashbuf,16);
-  polxvec_challenge(c,n,&hashbuf[16],0);
+  const size_t grind = 24+cpp->kappa1*N*QBYTES;
+  memcpy(&hashbuf[grind],"GHfoldv1",8);
+  hashbuf[grind+8] = (uint8_t)pi->foldnonce;
+  hashbuf[grind+9] = (uint8_t)(pi->foldnonce >> 8);
+  hashbuf[grind+10] = (uint8_t)(pi->foldnonce >> 16);
+  hashbuf[grind+11] = (uint8_t)(pi->foldnonce >> 24);
+  shake128(challenge_hash,32,hashbuf,
+           pi->foldnonce ? sizeof(hashbuf) : grind);
+  memcpy(st->h,challenge_hash,16);
+  polxvec_challenge(c,n,&challenge_hash[16],0);
 
   /* powers of x (sigmam1) */
   xvec[0] = 1;

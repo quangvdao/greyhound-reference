@@ -48,19 +48,21 @@ agreed parameter schedule, so neither is duplicated in the proof.
 
 | Degree | Proof total | Fold bytes | Tail total | Final `t` | Final `h` | Final `z` |
 |---:|---:|---:|---:|---:|---:|---:|
-| 2^20 | 56,477 | 23,005 | 33,472 | 14,080 | 2,304 | 17,088 |
-| 2^21 | 56,700 | 23,283 | 33,417 | 14,080 | 2,304 | 17,033 |
-| 2^22 | 59,398 | 26,802 | 32,596 | 14,080 | 2,304 | 16,212 |
-| 2^23 | 59,076 | 26,828 | 32,248 | 14,080 | 2,304 | 15,864 |
-| 2^24 | 58,885 | 26,847 | 32,038 | 14,080 | 2,304 | 15,654 |
-| 2^25 | 60,248 | 27,647 | 32,601 | 14,080 | 2,304 | 16,217 |
-| 2^26 | 62,266 | 28,692 | 33,574 | 14,080 | 2,304 | 17,190 |
-| 2^27 | 64,665 | 32,261 | 32,404 | 14,080 | 2,304 | 16,020 |
-| 2^28 | 64,626 | 32,245 | 32,381 | 14,080 | 2,304 | 15,997 |
+| 2^20 | 56,505 | 23,033 | 33,472 | 14,080 | 2,304 | 17,088 |
+| 2^21 | 56,728 | 23,311 | 33,417 | 14,080 | 2,304 | 17,033 |
+| 2^22 | 59,430 | 26,834 | 32,596 | 14,080 | 2,304 | 16,212 |
+| 2^23 | 59,108 | 26,860 | 32,248 | 14,080 | 2,304 | 15,864 |
+| 2^24 | 58,917 | 26,879 | 32,038 | 14,080 | 2,304 | 15,654 |
+| 2^25 | 60,280 | 27,679 | 32,601 | 14,080 | 2,304 | 16,217 |
+| 2^26 | 62,298 | 28,724 | 33,574 | 14,080 | 2,304 | 17,190 |
+| 2^27 | 64,701 | 32,297 | 32,404 | 14,080 | 2,304 | 16,020 |
+| 2^28 | 64,662 | 32,281 | 32,381 | 14,080 | 2,304 | 15,997 |
 
 Every entry is an exact contextual proof length. There is no pack header,
 magic, version, section-length table, proof count, or repeated schedule
-metadata.
+metadata. The recorded sweep's realized `z` samples are unchanged; totals and
+fold columns add the exactly known 4-byte nonce for the Greyhound root and for
+every Labrador fold, without rerunning the sweep.
 
 ## Fold/tail accounting convention
 
@@ -93,41 +95,44 @@ its C structs place the objects differently:
   byte followed by the exact Rice-coded folded-witness coefficients. Its size
   varies with the realized witness.
 - **Fold bytes:** everything else: the Greyhound opening, all ordinary
-  Labrador folds, and the terminal fold's 17 scalar bytes, JL coordinates, and
-  four integer-to-ring lift elements. Those terminal proof-of-relation bytes
-  remain fold bytes, just as Akita keeps its terminal prefix/EOR/grind bytes out
-  of `final_witness`.
+  Labrador folds, and the terminal fold's 21 scalar bytes (including its
+  4-byte grind nonce), JL coordinates, and four integer-to-ring lift elements.
+  Those terminal proof-of-relation bytes remain fold bytes, just as Akita keeps
+  its terminal prefix/EOR/grind bytes out of `final_witness`.
 
 This is an accounting correspondence, not an assertion that `h` and `e` are
 the same algebraic object. It exposes the common terminal roles: inner state
 `t`, linear evaluation/relation data `h` versus `e`, and folded response `z`.
-No bytes are added, removed, or re-encoded.
+The accounting reclassification itself adds, removes, and re-encodes no bytes.
 
 ## Exact wire composition
 
-Each contextual Labrador fold contributes exactly 17 scalar bytes: a one-byte
-Rice parameter, an 8-byte JL retry nonce, and an 8-byte next-witness norm. The
-120-byte fixed header and per-source shape table belong only to the separate
+Each contextual Labrador fold contributes exactly 21 scalar bytes: a one-byte
+Rice parameter, an 8-byte JL retry nonce, an 8-byte next-witness norm, and a
+4-byte folding-challenge grind nonce. The contextual Greyhound root contributes
+12 scalar bytes: its 8-byte next-witness norm and its own 4-byte grind nonce.
+The 124-byte fixed header and per-source shape table belong only to the separate
 self-describing archival encoding and are not counted here.
 
 | Degree | Fold scalars | GH `u2` | Fold JL | Fold ring/lifts | Final `t` | Final `h` | Final `z` | Proof total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2^20 | 110 | 1,792 | 2,671 | 18,432 | 14,080 | 2,304 | 17,088 | 56,477 |
-| 2^21 | 110 | 2,048 | 2,693 | 18,432 | 14,080 | 2,304 | 17,033 | 56,700 |
-| 2^22 | 127 | 2,048 | 3,123 | 21,504 | 14,080 | 2,304 | 16,212 | 59,398 |
-| 2^23 | 127 | 2,048 | 3,149 | 21,504 | 14,080 | 2,304 | 15,864 | 59,076 |
-| 2^24 | 127 | 2,048 | 3,168 | 21,504 | 14,080 | 2,304 | 15,654 | 58,885 |
-| 2^25 | 127 | 2,304 | 3,200 | 22,016 | 14,080 | 2,304 | 16,217 | 60,248 |
-| 2^26 | 127 | 2,304 | 3,221 | 23,040 | 14,080 | 2,304 | 17,190 | 62,266 |
-| 2^27 | 144 | 2,304 | 3,701 | 26,112 | 14,080 | 2,304 | 16,020 | 64,665 |
-| 2^28 | 144 | 2,304 | 3,685 | 26,112 | 14,080 | 2,304 | 15,997 | 64,626 |
+| 2^20 | 138 | 1,792 | 2,671 | 18,432 | 14,080 | 2,304 | 17,088 | 56,505 |
+| 2^21 | 138 | 2,048 | 2,693 | 18,432 | 14,080 | 2,304 | 17,033 | 56,728 |
+| 2^22 | 159 | 2,048 | 3,123 | 21,504 | 14,080 | 2,304 | 16,212 | 59,430 |
+| 2^23 | 159 | 2,048 | 3,149 | 21,504 | 14,080 | 2,304 | 15,864 | 59,108 |
+| 2^24 | 159 | 2,048 | 3,168 | 21,504 | 14,080 | 2,304 | 15,654 | 58,917 |
+| 2^25 | 159 | 2,304 | 3,200 | 22,016 | 14,080 | 2,304 | 16,217 | 60,280 |
+| 2^26 | 159 | 2,304 | 3,221 | 23,040 | 14,080 | 2,304 | 17,190 | 62,298 |
+| 2^27 | 180 | 2,304 | 3,701 | 26,112 | 14,080 | 2,304 | 16,020 | 64,701 |
+| 2^28 | 180 | 2,304 | 3,685 | 26,112 | 14,080 | 2,304 | 15,997 | 64,662 |
 
-`Fold scalars` are the top-level 8-byte norm plus 17 bytes per Labrador fold.
+`Fold scalars` are the top-level 12-byte norm/nonce pair plus 21 bytes per
+Labrador fold.
 There are no framing bytes. Across the sweep, lossless JL coordinates cost
 2,671-3,701 bytes, fold-classified ring/lift payloads cost 18,432-26,112
 bytes, and final `z` costs 15,654-17,190 bytes. The comparison tail
-`t + h + z` costs 32,038-33,574 bytes. The total is 56,477 bytes at 2^20,
-64,626 bytes at 2^28, and reaches a maximum of 64,665 bytes at 2^27 while the
+`t + h + z` costs 32,038-33,574 bytes. The total is 56,505 bytes at 2^20,
+64,662 bytes at 2^28, and reaches a maximum of 64,701 bytes at 2^27 while the
 polynomial degree grows by 256x. Proof size is essentially flat, with discrete
 jumps when the schedule adds a fold or raises a rank. Runtime and prover
 memory, not proof size, are the dominant scaling cost.
@@ -138,8 +143,9 @@ The contextual proof follows the same reporting boundary as Akita, but not the
 same physical segment order. It is canonical but not self-describing. The
 caller supplies a trusted context containing the public commitment, polynomial
 instance, fold count, and exact per-fold parameter shapes. Physically, the
-Labrador wire contains the top norm and Greyhound `u2`; each ordinary fold;
-then the terminal proof's 17 scalar bytes, JL projection, `u1 = t`, `u2 = h`,
+Labrador wire contains the top norm, root grind nonce, and Greyhound `u2`;
+each ordinary fold with its own grind nonce;
+then the terminal proof's 21 scalar bytes, JL projection, `u1 = t`, `u2 = h`,
 and four lift rings; then the separately Rice-coded terminal witness `z`.
 Comparison accounting moves the already-present `t` and `h` bytes from that
 physical terminal-proof segment into the semantic tail. It does not move or
@@ -193,175 +199,175 @@ The separately encoded terminal witness `z` is stated below each table.
 
 ### Degree 2^20
 
-Greyhound contextual opening: 1,800 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 1,804 bytes (`u1` commitment excluded).
 Top-level quantum security: inner 134.355 bits;
 outer 138.595 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 8 | 962+1032 | 6x2 | 5x6 | 17/6 | 4,647 B | 131.970 / 152.110 |
-| 2 | 5 | 592+595 | 5x2 | 5x7 | 14/5 | 4,077 B | 128.790 / 149.725 |
-| 3 | 3 | 593+360 | 4x2 | 4x8 | 13/5 | 4,040 B | 142.040 / 171.985 |
-| 4 | 3 | 516+336 | 4x2 | 4x8 | 12/4 | 3,506 B | 133.295 / 137.270 |
-| 5 | 3 | 456+336 | 4x2 | 4x8 | 12/4 | 3,493 B | 136.740 / 143.630 |
-| 6 tail | 5 | 250+70 | 8x1 | 32x1 | 11/- | 17,826 B = 1,442 fold + 14,080 `t` + 2,304 `h` | 138.595 / - |
+| 1 | 8 | 962+1032 | 6x2 | 5x6 | 17/6 | 4,651 B | 131.970 / 152.110 |
+| 2 | 5 | 592+595 | 5x2 | 5x7 | 14/5 | 4,081 B | 128.790 / 149.725 |
+| 3 | 3 | 593+360 | 4x2 | 4x8 | 13/5 | 4,044 B | 142.040 / 171.985 |
+| 4 | 3 | 516+336 | 4x2 | 4x8 | 12/4 | 3,510 B | 133.295 / 137.270 |
+| 5 | 3 | 456+336 | 4x2 | 4x8 | 12/4 | 3,497 B | 136.740 / 143.630 |
+| 6 tail | 5 | 250+70 | 8x1 | 32x1 | 11/- | 17,830 B = 1,446 fold + 14,080 `t` + 2,304 `h` | 138.595 / - |
 
-Final `z`: 17,088 B. Comparison accounting: fold = 23,005 B; tail =
-14,080 B `t` + 2,304 B `h` + 17,088 B `z` = 33,472 B; total = 56,477 B.
+Final `z`: 17,088 B. Comparison accounting: fold = 23,033 B; tail =
+14,080 B `t` + 2,304 B `h` + 17,088 B `z` = 33,472 B; total = 56,505 B.
 
 ### Degree 2^21
 
-Greyhound contextual opening: 2,056 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,060 bytes (`u1` commitment excluded).
 Top-level security: inner 139.390 bits; outer
 158.470 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 9 | 1236+1188 | 6x2 | 5x6 | 17/6 | 4,655 B | 129.585 / 147.075 |
-| 2 | 5 | 732+630 | 5x2 | 5x7 | 15/5 | 4,083 B | 139.920 / 146.015 |
-| 3 | 4 | 524+496 | 4x2 | 4x8 | 13/5 | 4,041 B | 140.450 / 168.540 |
-| 4 | 3 | 515+336 | 4x2 | 4x8 | 12/4 | 3,509 B | 133.030 / 136.740 |
-| 5 | 3 | 456+336 | 4x2 | 4x8 | 12/4 | 3,497 B | 136.210 / 142.570 |
-| 6 tail | 5 | 250+70 | 8x1 | 32x1 | 11/- | 17,826 B = 1,442 fold + 14,080 `t` + 2,304 `h` | 138.595 / - |
+| 1 | 9 | 1236+1188 | 6x2 | 5x6 | 17/6 | 4,659 B | 129.585 / 147.075 |
+| 2 | 5 | 732+630 | 5x2 | 5x7 | 15/5 | 4,087 B | 139.920 / 146.015 |
+| 3 | 4 | 524+496 | 4x2 | 4x8 | 13/5 | 4,045 B | 140.450 / 168.540 |
+| 4 | 3 | 515+336 | 4x2 | 4x8 | 12/4 | 3,513 B | 133.030 / 136.740 |
+| 5 | 3 | 456+336 | 4x2 | 4x8 | 12/4 | 3,501 B | 136.210 / 142.570 |
+| 6 tail | 5 | 250+70 | 8x1 | 32x1 | 11/- | 17,830 B = 1,446 fold + 14,080 `t` + 2,304 `h` | 138.595 / - |
 
-Final `z`: 17,033 B. Comparison accounting: fold = 23,283 B; tail =
-14,080 B `t` + 2,304 B `h` + 17,033 B `z` = 33,417 B; total = 56,700 B.
+Final `z`: 17,033 B. Comparison accounting: fold = 23,311 B; tail =
+14,080 B `t` + 2,304 B `h` + 17,033 B `z` = 33,417 B; total = 56,728 B.
 
 ### Degree 2^22
 
-Greyhound contextual opening: 2,056 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,060 bytes (`u1` commitment excluded).
 Top-level security: inner 135.150 bits; outer
 150.520 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 10 | 1569+1410 | 6x2 | 5x6 | 18/6 | 4,664 B | 137.535 / 142.040 |
-| 2 | 6 | 758+777 | 5x2 | 5x7 | 15/5 | 4,092 B | 137.800 / 142.040 |
-| 3 | 4 | 574+462 | 5x2 | 5x7 | 14/5 | 4,047 B | 133.295 / 159.000 |
-| 4 | 3 | 537+336 | 4x2 | 4x8 | 12/4 | 3,519 B | 130.380 / 131.970 |
-| 5 | 3 | 470+336 | 4x2 | 4x8 | 12/4 | 3,499 B | 135.680 / 141.245 |
-| 6 | 3 | 426+336 | 4x2 | 4x8 | 12/4 | 3,489 B | 137.800 / 145.485 |
-| 7 tail | 5 | 238+70 | 8x1 | 32x1 | 11/- | 17,820 B = 1,436 fold + 14,080 `t` + 2,304 `h` | 139.125 / - |
+| 1 | 10 | 1569+1410 | 6x2 | 5x6 | 18/6 | 4,668 B | 137.535 / 142.040 |
+| 2 | 6 | 758+777 | 5x2 | 5x7 | 15/5 | 4,096 B | 137.800 / 142.040 |
+| 3 | 4 | 574+462 | 5x2 | 5x7 | 14/5 | 4,051 B | 133.295 / 159.000 |
+| 4 | 3 | 537+336 | 4x2 | 4x8 | 12/4 | 3,523 B | 130.380 / 131.970 |
+| 5 | 3 | 470+336 | 4x2 | 4x8 | 12/4 | 3,503 B | 135.680 / 141.245 |
+| 6 | 3 | 426+336 | 4x2 | 4x8 | 12/4 | 3,493 B | 137.800 / 145.485 |
+| 7 tail | 5 | 238+70 | 8x1 | 32x1 | 11/- | 17,824 B = 1,440 fold + 14,080 `t` + 2,304 `h` | 139.125 / - |
 
-Final `z`: 16,212 B. Comparison accounting: fold = 26,802 B; tail =
-14,080 B `t` + 2,304 B `h` + 16,212 B `z` = 32,596 B; total = 59,398 B.
+Final `z`: 16,212 B. Comparison accounting: fold = 26,834 B; tail =
+14,080 B `t` + 2,304 B `h` + 16,212 B `z` = 32,596 B; total = 59,430 B.
 
 ### Degree 2^23
 
-Greyhound contextual opening: 2,056 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,060 bytes (`u1` commitment excluded).
 Top-level security: inner 139.390 bits; outer
 142.570 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 12 | 1886+1764 | 6x2 | 5x6 | 18/6 | 4,678 B | 134.885 / 137.270 |
-| 2 | 6 | 923+777 | 5x2 | 5x7 | 15/5 | 4,098 B | 135.680 / 138.595 |
-| 3 | 4 | 656+462 | 5x2 | 5x7 | 14/5 | 4,047 B | 132.235 / 156.615 |
-| 4 | 4 | 444+464 | 4x2 | 4x8 | 12/4 | 3,523 B | 129.320 / 130.380 |
-| 5 | 3 | 451+336 | 4x2 | 4x8 | 12/4 | 3,500 B | 135.415 / 140.980 |
-| 6 | 3 | 413+336 | 4x2 | 4x8 | 12/4 | 3,490 B | 138.065 / 146.280 |
-| 7 tail | 5 | 233+70 | 8x1 | 32x1 | 11/- | 17,820 B = 1,436 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
+| 1 | 12 | 1886+1764 | 6x2 | 5x6 | 18/6 | 4,682 B | 134.885 / 137.270 |
+| 2 | 6 | 923+777 | 5x2 | 5x7 | 15/5 | 4,102 B | 135.680 / 138.595 |
+| 3 | 4 | 656+462 | 5x2 | 5x7 | 14/5 | 4,051 B | 132.235 / 156.615 |
+| 4 | 4 | 444+464 | 4x2 | 4x8 | 12/4 | 3,527 B | 129.320 / 130.380 |
+| 5 | 3 | 451+336 | 4x2 | 4x8 | 12/4 | 3,504 B | 135.415 / 140.980 |
+| 6 | 3 | 413+336 | 4x2 | 4x8 | 12/4 | 3,494 B | 138.065 / 146.280 |
+| 7 tail | 5 | 233+70 | 8x1 | 32x1 | 11/- | 17,824 B = 1,440 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
 
-Final `z`: 15,864 B. Comparison accounting: fold = 26,828 B; tail =
-14,080 B `t` + 2,304 B `h` + 15,864 B `z` = 32,248 B; total = 59,076 B.
+Final `z`: 15,864 B. Comparison accounting: fold = 26,860 B; tail =
+14,080 B `t` + 2,304 B `h` + 15,864 B `z` = 32,248 B; total = 59,108 B.
 
 ### Degree 2^24
 
-Greyhound contextual opening: 2,056 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,060 bytes (`u1` commitment excluded).
 Top-level security: inner 134.885 bits; outer
 134.885 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 15 | 2131+2340 | 6x2 | 5x6 | 18/6 | 4,684 B | 131.970 / 131.970 |
-| 2 | 7 | 944+931 | 5x2 | 5x7 | 15/5 | 4,103 B | 133.825 / 135.415 |
-| 3 | 5 | 564+595 | 5x2 | 5x7 | 14/5 | 4,054 B | 131.705 / 155.820 |
-| 4 | 4 | 431+464 | 4x2 | 4x8 | 12/4 | 3,522 B | 129.320 / 130.115 |
-| 5 | 3 | 442+336 | 4x2 | 4x8 | 12/4 | 3,502 B | 135.680 / 141.510 |
-| 6 | 3 | 407+336 | 4x2 | 4x8 | 12/4 | 3,493 B | 137.800 / 145.750 |
-| 7 tail | 5 | 230+70 | 8x1 | 32x1 | 11/- | 17,817 B = 1,433 fold + 14,080 `t` + 2,304 `h` | 139.920 / - |
+| 1 | 15 | 2131+2340 | 6x2 | 5x6 | 18/6 | 4,688 B | 131.970 / 131.970 |
+| 2 | 7 | 944+931 | 5x2 | 5x7 | 15/5 | 4,107 B | 133.825 / 135.415 |
+| 3 | 5 | 564+595 | 5x2 | 5x7 | 14/5 | 4,058 B | 131.705 / 155.820 |
+| 4 | 4 | 431+464 | 4x2 | 4x8 | 12/4 | 3,526 B | 129.320 / 130.115 |
+| 5 | 3 | 442+336 | 4x2 | 4x8 | 12/4 | 3,506 B | 135.680 / 141.510 |
+| 6 | 3 | 407+336 | 4x2 | 4x8 | 12/4 | 3,497 B | 137.800 / 145.750 |
+| 7 tail | 5 | 230+70 | 8x1 | 32x1 | 11/- | 17,821 B = 1,437 fold + 14,080 `t` + 2,304 `h` | 139.920 / - |
 
-Final `z`: 15,654 B. Comparison accounting: fold = 26,847 B; tail =
-14,080 B `t` + 2,304 B `h` + 15,654 B `z` = 32,038 B; total = 58,885 B.
+Final `z`: 15,654 B. Comparison accounting: fold = 26,879 B; tail =
+14,080 B `t` + 2,304 B `h` + 15,654 B `z` = 32,038 B; total = 58,917 B.
 
 ### Degree 2^25
 
-Greyhound contextual opening: 2,312 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,316 bytes (`u1` commitment excluded).
 Top-level security: inner 138.330 bits; outer
 149.990 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 15 | 3074+2340 | 6x2 | 5x6 | 18/7 | 5,208 B | 128.525 / 156.880 |
-| 2 | 8 | 1061+1092 | 5x2 | 5x7 | 15/5 | 4,108 B | 131.440 / 130.910 |
-| 3 | 5 | 643+595 | 5x2 | 5x7 | 14/5 | 4,059 B | 130.645 / 153.435 |
-| 4 | 4 | 471+464 | 4x2 | 4x8 | 12/4 | 3,526 B | 128.260 / 128.260 |
-| 5 | 3 | 469+336 | 4x2 | 4x8 | 12/4 | 3,501 B | 134.885 / 139.920 |
-| 6 | 3 | 425+336 | 4x2 | 4x8 | 12/4 | 3,494 B | 137.800 / 145.220 |
-| 7 tail | 5 | 238+70 | 8x1 | 32x1 | 11/- | 17,823 B = 1,439 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
+| 1 | 15 | 3074+2340 | 6x2 | 5x6 | 18/7 | 5,212 B | 128.525 / 156.880 |
+| 2 | 8 | 1061+1092 | 5x2 | 5x7 | 15/5 | 4,112 B | 131.440 / 130.910 |
+| 3 | 5 | 643+595 | 5x2 | 5x7 | 14/5 | 4,063 B | 130.645 / 153.435 |
+| 4 | 4 | 471+464 | 4x2 | 4x8 | 12/4 | 3,530 B | 128.260 / 128.260 |
+| 5 | 3 | 469+336 | 4x2 | 4x8 | 12/4 | 3,505 B | 134.885 / 139.920 |
+| 6 | 3 | 425+336 | 4x2 | 4x8 | 12/4 | 3,498 B | 137.800 / 145.220 |
+| 7 tail | 5 | 238+70 | 8x1 | 32x1 | 11/- | 17,827 B = 1,443 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
 
-Final `z`: 16,217 B. Comparison accounting: fold = 27,647 B; tail =
-14,080 B `t` + 2,304 B `h` + 16,217 B `z` = 32,601 B; total = 60,248 B.
+Final `z`: 16,217 B. Comparison accounting: fold = 27,679 B; tail =
+14,080 B `t` + 2,304 B `h` + 16,217 B `z` = 32,601 B; total = 60,280 B.
 
 ### Degree 2^26
 
-Greyhound contextual opening: 2,312 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,316 bytes (`u1` commitment excluded).
 Top-level security: inner 129.850 bits; outer
 149.195 bits.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 15 | 4733+2430 | 6x2 | 5x6 | 19/7 | 5,211 B | 136.740 / 153.170 |
-| 2 | 9 | 1322+1260 | 5x2 | 5x7 | 15/6 | 4,623 B | 129.055 / 164.035 |
-| 3 | 5 | 781+595 | 5x2 | 5x7 | 14/5 | 4,067 B | 129.320 / 150.520 |
-| 4 | 4 | 540+496 | 4x2 | 4x8 | 13/5 | 4,039 B | 142.305 / 172.515 |
-| 5 | 3 | 526+336 | 4x2 | 4x8 | 12/4 | 3,505 B | 133.560 / 137.800 |
-| 6 | 3 | 463+336 | 4x2 | 4x8 | 12/4 | 3,494 B | 136.740 / 143.630 |
-| 7 tail | 5 | 253+70 | 8x1 | 32x1 | 11/- | 17,825 B = 1,441 fold + 14,080 `t` + 2,304 `h` | 138.065 / - |
+| 1 | 15 | 4733+2430 | 6x2 | 5x6 | 19/7 | 5,215 B | 136.740 / 153.170 |
+| 2 | 9 | 1322+1260 | 5x2 | 5x7 | 15/6 | 4,627 B | 129.055 / 164.035 |
+| 3 | 5 | 781+595 | 5x2 | 5x7 | 14/5 | 4,071 B | 129.320 / 150.520 |
+| 4 | 4 | 540+496 | 4x2 | 4x8 | 13/5 | 4,043 B | 142.305 / 172.515 |
+| 5 | 3 | 526+336 | 4x2 | 4x8 | 12/4 | 3,509 B | 133.560 / 137.800 |
+| 6 | 3 | 463+336 | 4x2 | 4x8 | 12/4 | 3,498 B | 136.740 / 143.630 |
+| 7 tail | 5 | 253+70 | 8x1 | 32x1 | 11/- | 17,829 B = 1,445 fold + 14,080 `t` + 2,304 `h` | 138.065 / - |
 
-Final `z`: 17,190 B. Comparison accounting: fold = 28,692 B; tail =
-14,080 B `t` + 2,304 B `h` + 17,190 B `z` = 33,574 B; total = 62,266 B.
+Final `z`: 17,190 B. Comparison accounting: fold = 28,724 B; tail =
+14,080 B `t` + 2,304 B `h` + 17,190 B `z` = 33,574 B; total = 62,298 B.
 
 ### Degree 2^27
 
-Greyhound contextual opening: 2,312 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,316 bytes (`u1` commitment excluded).
 Top-level security: inner 505.885 bits; outer 128.790 bits. The non-streaming
 factorization selected `8256 x 255`, making the top-level inner commitment rank
 `kappa = 64`.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 15 | 11029+2520 | 6x2 | 5x6 | 20/7 | 5,239 B | 136.740 / 135.680 |
-| 2 | 12 | 2049+1890 | 5x2 | 5x7 | 16/6 | 4,649 B | 133.030 / 147.870 |
-| 3 | 7 | 856+931 | 5x2 | 5x7 | 15/5 | 4,078 B | 137.800 / 142.305 |
-| 4 | 4 | 661+496 | 4x2 | 4x8 | 13/5 | 4,047 B | 138.595 / 165.095 |
-| 5 | 4 | 455+464 | 4x2 | 4x8 | 12/4 | 3,513 B | 131.970 / 134.620 |
-| 6 | 3 | 458+336 | 4x2 | 4x8 | 12/4 | 3,498 B | 136.210 / 142.305 |
-| 7 | 3 | 418+336 | 4x2 | 4x8 | 12/4 | 3,489 B | 138.065 / 145.750 |
-| 8 tail | 5 | 235+70 | 8x1 | 32x1 | 11/- | 17,820 B = 1,436 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
+| 1 | 15 | 11029+2520 | 6x2 | 5x6 | 20/7 | 5,243 B | 136.740 / 135.680 |
+| 2 | 12 | 2049+1890 | 5x2 | 5x7 | 16/6 | 4,653 B | 133.030 / 147.870 |
+| 3 | 7 | 856+931 | 5x2 | 5x7 | 15/5 | 4,082 B | 137.800 / 142.305 |
+| 4 | 4 | 661+496 | 4x2 | 4x8 | 13/5 | 4,051 B | 138.595 / 165.095 |
+| 5 | 4 | 455+464 | 4x2 | 4x8 | 12/4 | 3,517 B | 131.970 / 134.620 |
+| 6 | 3 | 458+336 | 4x2 | 4x8 | 12/4 | 3,502 B | 136.210 / 142.305 |
+| 7 | 3 | 418+336 | 4x2 | 4x8 | 12/4 | 3,493 B | 138.065 / 145.750 |
+| 8 tail | 5 | 235+70 | 8x1 | 32x1 | 11/- | 17,824 B = 1,440 fold + 14,080 `t` + 2,304 `h` | 139.390 / - |
 
-Final `z`: 16,020 B. Comparison accounting: fold = 32,261 B; tail =
-14,080 B `t` + 2,304 B `h` + 16,020 B `z` = 32,404 B; total = 64,665 B.
+Final `z`: 16,020 B. Comparison accounting: fold = 32,297 B; tail =
+14,080 B `t` + 2,304 B `h` + 16,020 B `z` = 32,404 B; total = 64,701 B.
 
 ### Degree 2^28
 
-Greyhound contextual opening: 2,312 bytes (`u1` commitment excluded).
+Greyhound contextual opening: 2,316 bytes (`u1` commitment excluded).
 Top-level security: inner 133.560 bits; outer
 134.355 bits.  This run used streaming witness storage.
 
 | Fold | Rows | Next `n+m` | Opening | Uniform | `kappa/kappa1` | Wire | Security I/O |
 |---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 15 | 10412+2430 | 6x2 | 5x6 | 19/7 | 5,234 B | 129.585 / 139.390 |
-| 2 | 12 | 1938+1890 | 5x2 | 5x7 | 16/6 | 4,645 B | 134.885 / 151.315 |
-| 3 | 6 | 961+777 | 5x2 | 5x7 | 15/5 | 4,079 B | 138.595 / 143.895 |
-| 4 | 4 | 675+496 | 4x2 | 4x8 | 13/5 | 4,045 B | 139.125 / 166.155 |
-| 5 | 4 | 462+464 | 4x2 | 4x8 | 12/4 | 3,507 B | 131.705 / 134.620 |
-| 6 | 3 | 463+336 | 4x2 | 4x8 | 12/4 | 3,497 B | 135.945 / 141.775 |
-| 7 | 3 | 421+336 | 4x2 | 4x8 | 12/4 | 3,486 B | 138.065 / 146.015 |
-| 8 tail | 5 | 236+70 | 8x1 | 32x1 | 11/- | 17,824 B = 1,440 fold + 14,080 `t` + 2,304 `h` | 139.920 / - |
+| 1 | 15 | 10412+2430 | 6x2 | 5x6 | 19/7 | 5,238 B | 129.585 / 139.390 |
+| 2 | 12 | 1938+1890 | 5x2 | 5x7 | 16/6 | 4,649 B | 134.885 / 151.315 |
+| 3 | 6 | 961+777 | 5x2 | 5x7 | 15/5 | 4,083 B | 138.595 / 143.895 |
+| 4 | 4 | 675+496 | 4x2 | 4x8 | 13/5 | 4,049 B | 139.125 / 166.155 |
+| 5 | 4 | 462+464 | 4x2 | 4x8 | 12/4 | 3,511 B | 131.705 / 134.620 |
+| 6 | 3 | 463+336 | 4x2 | 4x8 | 12/4 | 3,501 B | 135.945 / 141.775 |
+| 7 | 3 | 421+336 | 4x2 | 4x8 | 12/4 | 3,490 B | 138.065 / 146.015 |
+| 8 tail | 5 | 236+70 | 8x1 | 32x1 | 11/- | 17,828 B = 1,444 fold + 14,080 `t` + 2,304 `h` | 139.920 / - |
 
-Final `z`: 15,997 B. Comparison accounting: fold = 32,245 B; tail =
-14,080 B `t` + 2,304 B `h` + 15,997 B `z` = 32,381 B; total = 64,626 B.
+Final `z`: 15,997 B. Comparison accounting: fold = 32,281 B; tail =
+14,080 B `t` + 2,304 B `h` + 15,997 B `z` = 32,381 B; total = 64,662 B.
 
 ## Why the size curve is non-monotonic
 
@@ -430,6 +436,15 @@ test; it does not change the pack protocol or measured pack operations.
 The original 2^26 attempt selected Greyhound outer rank 8 using the predicted
 second moment, but the realized witness norm produced only 126.405 ADPS16
 quantum bits, so reduction correctly failed. Greyhound's L2 quantum-128 schedule
-now reserves 25% norm headroom.  Verification always checks the realized norm
-and still fails closed if the headroom is exceeded.  This changed 2^26 to outer
-rank 9 and allowed the verified result recorded here.
+now reserves 25% norm headroom. Verification always checks the realized norm.
+Every norm-producing level now grinds its own transcript-bound 4-byte nonce
+until all realized inner and outer L2 SIS predicates for that level pass. The
+Greyhound root and ordinary Labrador folds keep their commitments fixed and
+recompute only their folding challenges and `z`; the terminal fold keeps `t`
+fixed and recomputes the dependent sequential `h`, challenge, and `z` chain.
+Nonce zero preserves the original transcript exactly, while retries are
+domain-separated. The verifier bounds and replays every nonce. The 4096-attempt cap represents at
+most 12 bits of Fiat-Shamir grinding per level; it does not change the reported
+SIS hardness because every accepted response is checked against the original
+L2 collision predicates. The earlier 25% Greyhound headroom remains in place,
+so nonce zero should remain the common path.

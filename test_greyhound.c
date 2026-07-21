@@ -20,11 +20,11 @@ static double wall_time(void) {
 static int test_polcom(size_t len) {
   int ret;
   int64_t x,y;
-  polz *s;
-  polcomctx ctx;
-  polcomprf pi;
-  prncplstmnt st;
-  witness wt;
+  polz *s = NULL;
+  polcomctx ctx = {};
+  polcomprf pi = {};
+  prncplstmnt st = {};
+  witness wt = {};
   __attribute__((aligned(16)))
   uint8_t seed[16];
 
@@ -40,8 +40,13 @@ static int test_polcom(size_t len) {
   polcom_commit(&ctx,s,len);
   print_polcomctx_pp(&ctx);
 
-  polcom_eval(&wt,&pi,&ctx,x,y);
+  ret = polcom_eval(&wt,&pi,&ctx,x,y);
+  if(ret) {
+    printf("ERROR: Greyhound fold grind failed: %d\n",ret);
+    goto end;
+  }
   free(s);
+  s = NULL;
   free_polcomctx(&ctx);
   print_polcomprf_pp(&pi);
 
@@ -61,6 +66,8 @@ static int test_polcom(size_t len) {
   }
 
 end:
+  free(s);
+  free_polcomctx(&ctx);
   free_polcomprf(&pi);
   free_prncplstmnt(&st);
   free_witness(&wt);
@@ -124,6 +131,15 @@ static int test_pack(size_t len) {
       goto end;
     }
     wire2[top_bytes] = wire[top_bytes];
+    memset(&wire2[8],0xff,4);
+    if(!greyhound_pack_deserialize_contextual(&bad_pi,&bad,&pi,&p,wire2,wire_bytes)) {
+      printf("ERROR: invalid Greyhound fold grind nonce was accepted\n");
+      free_polcomprf(&bad_pi);
+      free_composite(&bad);
+      ret = 1;
+      goto end;
+    }
+    memcpy(&wire2[8],&wire[8],4);
     if(!greyhound_pack_deserialize_contextual(&bad_pi,&bad,&pi,&p,wire2,wire_bytes-1)) {
       printf("ERROR: truncated contextual proof was accepted\n");
       free_polcomprf(&bad_pi);
@@ -134,8 +150,24 @@ static int test_pack(size_t len) {
   }
   printf("Contextual Greyhound proof size: %zu bytes\n\n",wire_bytes);
   ret = composite_verify_polcom(&decoded,&decoded_pi);
-  if(ret)
+  if(ret) {
     printf("ERROR: verify_composite_polcom failed: %d\n",ret);
+    goto end;
+  }
+  {
+    uint32_t foldnonce = decoded_pi.foldnonce;
+    decoded_pi.foldnonce = foldnonce == FOLD_GRIND_MAX_ATTEMPTS-1
+                         ? foldnonce-1 : foldnonce+1;
+    if(composite_verify_polcom(&decoded,&decoded_pi) == 0) {
+      printf("ERROR: Modified Greyhound fold grind nonce was accepted\n");
+      ret = 1;
+      goto end;
+    }
+    decoded_pi.foldnonce = foldnonce;
+  }
+  ret = composite_verify_polcom(&decoded,&decoded_pi);
+  if(ret)
+    printf("ERROR: Restored Greyhound fold grind nonce did not verify: %d\n",ret);
 
 end:
   free(wire);

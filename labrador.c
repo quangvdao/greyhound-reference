@@ -140,15 +140,71 @@ sis_estimate sis_estimate_l2_core_svp_adps16(size_t rank, size_t width,
 }
 
 int sis_secure(size_t rank, size_t width, double norm) {
-  sis_estimate estimate;
+  const double q = ldexp(1,LOGQ)-QOFF;
+  const double logq = log2(q);
+  double logbound,logdelta,droot,rootvolume,target;
+  double lnq,loga2,logb2;
+  size_t n,m,d;
 
   if(sis_get_security_mode() == SIS_SECURITY_LEGACY)
     return log2(norm) < sis_log2_cutoff(rank);
   if(sis_get_security_mode() != SIS_SECURITY_L2_QUANTUM128_ADPS16)
     return 0;
-  estimate = sis_estimate_l2_core_svp_adps16(rank,width,norm);
-  return estimate.valid && !estimate.trivially_easy &&
-         (!estimate.finite || estimate.quantum_bits >= 128);
+  if(!rank || !width || !isfinite(norm) || norm <= 0 ||
+     rank > SIZE_MAX/N || width > SIZE_MAX/N)
+    return 0;
+  norm = ceil(norm);
+  if(norm >= (q-1)/2)
+    return 0;
+
+  n = rank*N;
+  m = width*N;
+  logbound = log2(norm);
+  logdelta = logbound*logbound/(4*n*logq);
+  droot = sqrt(n*logq/logdelta);
+  d = droot >= (double)SIZE_MAX ? SIZE_MAX : (size_t)floor(droot);
+  d = MIN(d,m);
+  if(d <= 1)
+    return 0;
+
+  rootvolume = (double)n/d*logq;
+  target = exp2((logbound-rootvolume)/(d-1));
+  lnq = logq*M_LN2;
+  loga2 = log((double)n*lnq);
+  logb2 = log((double)d)+2*(double)n/d*lnq;
+  if(log(norm) <= 0.5*MIN(loga2,logb2))
+    return 1;
+
+  /* beta_from_delta() returns the first beta >= 40 whose root-Hermite
+   * factor is at most target.  For a 128-bit ADPS16 floor, beta >= 484.
+   * Compare directly at that boundary instead of repeating its binary
+   * search for every folding candidate. */
+  if(!isfinite(target) || target < 1 ||
+     target < root_hermite_factor(1 << 16))
+    return 1;
+  if(root_hermite_factor(40) < target)
+    return 40 > d;
+  if(d < 484)
+    return d < 40 || root_hermite_factor(d) > target+1e-13;
+  return root_hermite_factor(483) > target+1e-13;
+}
+
+static int inner_commitment_secure(size_t kappa, size_t width,
+                                   size_t f, size_t b, uint64_t normsq) {
+  return sis_secure(kappa,width,
+                    6*T*SLACK*ldexp(1,(f-1)*b)*sqrt((double)normsq));
+}
+
+static int amortized_commitments_secure(const comparams *cpp, size_t r,
+                                        size_t n, uint64_t normsq, int tail) {
+  size_t tri = (r*r+r)/2;
+  double outer_norm = 2*SLACK*sqrt((double)normsq);
+
+  if(!inner_commitment_secure(cpp->kappa,n,cpp->f,cpp->b,normsq))
+    return 0;
+  return tail ||
+         (sis_secure(cpp->kappa1,cpp->fu*r*cpp->kappa+cpp->fg*tri,outer_norm) &&
+          sis_secure(cpp->kappa1,cpp->fu*tri,outer_norm));
 }
 
 void print_sis_audit_pp(const char *role, size_t rank, size_t width, double l2_bound) {
@@ -222,6 +278,7 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
 
   pi->r = (quadratic == 2) ? 2*wt->r + 1 : wt->r;
   pi->tail = tail;
+  pi->foldnonce = 0;
 
   uint64_t normsq[pi->r];
   buf = _malloc(2*pi->r*sizeof(size_t));
@@ -341,8 +398,7 @@ int init_proof(proof *pi, const witness *wt, int quadratic, int tail) {
       if(!tail && quadratic)
         pi->normsq += (ldexp(1,2*cpp->bg)/12*(cpp->fg-1) + varg/ldexp(1,2*(cpp->fg-1)*cpp->bg))*(rr*rr+rr)/2;
       pi->normsq *= N;
-      if(sis_secure(cpp->kappa,nn,
-                    6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(pi->normsq)))
+      if(inner_commitment_secure(cpp->kappa,nn,cpp->f,cpp->b,pi->normsq))
         break;
     }
 
@@ -609,7 +665,7 @@ double print_proof_pp(const proof *pi) {
   outer1_width = groups*cpp->fu*cpp->kappa+cpp->fg*tri;
   outer2_width = cpp->fu*tri;
   wire_bytes = proof_contextual_serialized_size(pi);
-  metadata_bytes = 17;
+  metadata_bytes = 21;
   payload_bytes = (cpp->u1len+cpp->u2len+LIFTS)*N*QBYTES;
   s = sqrt(jlproj_normsq(pi->p));
   projection_bits = (log2(s)-4+2.05)*256;
@@ -665,6 +721,9 @@ double print_proof_pp(const proof *pi) {
   printf("    Projection dimension: 256 signed coordinates\n");
   printf("    Matrix retry nonce: %zu (number of deterministic candidates tried)\n",pi->jlnonce);
   printf("    Accepted projected l2 norm: %.2f\n",s);
+  printf("  Folding challenge grind:\n"
+         "    Accepted nonce: %u (candidate %u of at most %u)\n",
+         pi->foldnonce,pi->foldnonce+1,FOLD_GRIND_MAX_ATTEMPTS);
   printf("  Proof payload:\n");
   printf("    u1 ring elements: %zu (%s)\n",cpp->u1len,
          pi->tail ? "embedded inner commitments" : "first outer commitment");
@@ -672,7 +731,8 @@ double print_proof_pp(const proof *pi) {
          pi->tail ? "embedded opening/cross terms" : "second outer commitment");
   printf("    Integer-to-ring lift elements: %d\n",LIFTS);
   printf("  Contextual proof encoding (schedule shape out of band):\n");
-  printf("    Rice parameter + JL nonce + next norm: %zu bytes\n",metadata_bytes);
+  printf("    Rice parameter + JL nonce + next norm + fold grind nonce: %zu bytes\n",
+         metadata_bytes);
   printf("    JL coordinates: %zu bytes (lossless; %.2f bytes under legacy entropy model)\n",
          wire_bytes-metadata_bytes-payload_bytes,projection_bits/8);
   printf("    Ring-element payload: %zu bytes\n",payload_bytes);
@@ -1130,55 +1190,93 @@ static void aggregate(statement *ost, const proof *pi, const statement *ist) {
   free(tmp);
 }
 
-static void amortize_tail(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]) {
+static void fold_grind_seed(uint8_t out[16], const uint8_t h[16], uint32_t nonce) {
+  uint8_t in[28];
+
+  if(nonce == 0) {
+    memcpy(out,h,16);
+    return;
+  }
+  memcpy(in,h,16);
+  memcpy(&in[16],"LBRfold",8);
+  in[24] = (uint8_t)nonce;
+  in[25] = (uint8_t)(nonce >> 8);
+  in[26] = (uint8_t)(nonce >> 16);
+  in[27] = (uint8_t)(nonce >> 24);
+  shake128(out,16,in,sizeof(in));
+}
+
+static int amortize_tail(statement *ost, witness *owt, proof *pi,
+                         polx sx[ost->r][ost->n]) {
   const size_t r = ost->r;
   const size_t n = ost->n;
   const comparams *cpp = ost->cpp;
 
   size_t i;
+  uint32_t nonce;
   __attribute__((aligned(16)))
   uint8_t hashbuf[16+2*N*QBYTES];
   polx (*phi)[n] = (polx(*)[n])ost->cnst->phi;
   polx *hx = ost->u2;
   polz *hz = pi->u2;
+  polx *folded_s = _aligned_alloc(64,n*sizeof(polx));
+  polx *folded_phi = _aligned_alloc(64,n*sizeof(polx));
 
-  polxvec_sprod(&hx[0],phi[0],sx[0],n);
-  polz_frompolx(&hz[0],&hx[0]);
+  for(nonce=0;nonce<FOLD_GRIND_MAX_ATTEMPTS;nonce++) {
+    fold_grind_seed(hashbuf,ost->h,nonce);
 
-  memcpy(hashbuf,ost->h,16);
-  polzvec_bitpack(&hashbuf[16],&hz[0],1);
-  shake128(hashbuf,32,hashbuf,16+N*QBYTES);
-  polxvec_challenge(&ost->c[0],1,&hashbuf[16],0);
+    polxvec_sprod(&hx[0],phi[0],sx[0],n);
+    polz_frompolx(&hz[0],&hx[0]);
 
-  polxvec_polx_mul(sx[0],&ost->c[0],sx[0],n);
-  polxvec_polx_mul(phi[0],&ost->c[0],phi[0],n);
+    polzvec_bitpack(&hashbuf[16],&hz[0],1);
+    shake128(hashbuf,32,hashbuf,16+N*QBYTES);
+    polxvec_challenge(&ost->c[0],1,&hashbuf[16],0);
 
-  for(i=1;i<r;i++) {
-    polxvec_sprod(&hx[2*i-1],phi[i],sx[0],n);
-    polxvec_sprod_add(&hx[2*i-1],phi[0],sx[i],n);
-    polxvec_sprod(&hx[2*i],phi[i],sx[i],n);
-    polzvec_frompolxvec(&hz[2*i-1],&hx[2*i-1],2);
-    polzvec_bitpack(&hashbuf[16],&hz[2*i-1],2);
-    shake128(hashbuf,32,hashbuf,16+2*N*QBYTES);
-    polxvec_challenge(&ost->c[i],1,&hashbuf[16],0);
-    polxvec_polx_mul_add(sx[0],&ost->c[i],sx[i],n);
-    polxvec_polx_mul_add(phi[0],&ost->c[i],phi[i],n);
+    polxvec_polx_mul(folded_s,&ost->c[0],sx[0],n);
+    polxvec_polx_mul(folded_phi,&ost->c[0],phi[0],n);
+
+    for(i=1;i<r;i++) {
+      polxvec_sprod(&hx[2*i-1],phi[i],folded_s,n);
+      polxvec_sprod_add(&hx[2*i-1],folded_phi,sx[i],n);
+      polxvec_sprod(&hx[2*i],phi[i],sx[i],n);
+      polzvec_frompolxvec(&hz[2*i-1],&hx[2*i-1],2);
+      polzvec_bitpack(&hashbuf[16],&hz[2*i-1],2);
+      shake128(hashbuf,32,hashbuf,16+2*N*QBYTES);
+      polxvec_challenge(&ost->c[i],1,&hashbuf[16],0);
+      polxvec_polx_mul_add(folded_s,&ost->c[i],sx[i],n);
+      polxvec_polx_mul_add(folded_phi,&ost->c[i],phi[i],n);
+    }
+
+    polxvec_decompose(owt->s[0],folded_s,n,cpp->f,cpp->b);
+
+    ost->betasq = 0;
+    for(i=0;i<cpp->f;i++) {
+      owt->normsq[i] = polyvec_sprodz(owt->s[i],owt->s[i],n);
+      ost->betasq += owt->normsq[i];
+    }
+    if(amortized_commitments_secure(cpp,r,n,ost->betasq,1))
+      break;
   }
 
+  if(nonce == FOLD_GRIND_MAX_ATTEMPTS) {
+    free(folded_s);
+    free(folded_phi);
+    fprintf(stderr,"ERROR in amortize_tail(): Tail grind exhausted %u attempts\n",
+            FOLD_GRIND_MAX_ATTEMPTS);
+    return 1;
+  }
+
+  free(ost->cnst->phi);
+  ost->cnst->phi = folded_phi;
+  free(folded_s);
+  pi->foldnonce = nonce;
   memcpy(ost->h,hashbuf,16);
-  polxvec_decompose(owt->s[0],sx[0],n,cpp->f,cpp->b);
-
-  ost->betasq = 0;
-  for(i=0;i<cpp->f;i++) {
-    owt->normsq[i] = polyvec_sprodz(owt->s[i],owt->s[i],n);
-    ost->betasq += owt->normsq[i];
-  }
   pi->normsq = ost->betasq;
 
-  ost->cnst->phi = realloc(ost->cnst->phi,n*sizeof(polx));
+  return 0;
 }
 
-void amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]) {
+int amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]) {
   const size_t r = ost->r;
   const size_t n = ost->n;
   const size_t m = ost->m;
@@ -1189,11 +1287,11 @@ void amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]) 
   const size_t h = g + cpp->fg*(r*r+r)/2;
 
   if(pi->tail) {
-    amortize_tail(ost,owt,pi,sx);
-    return;
+    return amortize_tail(ost,owt,pi,sx);
   }
 
   size_t i,j,k,l;
+  uint32_t nonce;
   poly *vh = (poly*)&owt->s[cpp->f][h];
   polx (*phi)[n] = (polx(*)[n])ost->cnst->phi;
   polx *hx = (polx*)_aligned_alloc(64,(m-h)*sizeof(polx));
@@ -1220,31 +1318,50 @@ void amortize(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n]) 
   /* amortization */
   __attribute__((aligned(16)))
   uint8_t hashbuf[16+cpp->kappa1*N*QBYTES];
-  memcpy(hashbuf,ost->h,16);
-  polzvec_bitpack(&hashbuf[16],pi->u2,cpp->kappa1);
-  shake128(hashbuf,32,hashbuf,sizeof(hashbuf));
-  memcpy(ost->h,hashbuf,16);
-  polxvec_challenge(ost->c,r,&hashbuf[16],0);
-
-  polxvec_polx_mul(sx[0],&ost->c[0],sx[0],n);
-  polxvec_polx_mul(phi[0],&ost->c[0],phi[0],n);
-  for(i=1;i<r;i++) {
-    polxvec_polx_mul_add(sx[0],&ost->c[i],sx[i],n);
-    polxvec_polx_mul_add(phi[0],&ost->c[i],phi[i],n);
-  }
-  polxvec_decompose(owt->s[0],sx[0],n,cpp->f,cpp->b);
-
-  ost->betasq = 0;
-  for(i=0;i<cpp->f;i++) {
-    owt->normsq[i] = polyvec_sprodz(owt->s[i],owt->s[i],n);
-    ost->betasq += owt->normsq[i];
-  }
+  polx *folded_s = _aligned_alloc(64,n*sizeof(polx));
+  polx *folded_phi = _aligned_alloc(64,n*sizeof(polx));
   owt->normsq[cpp->f] = polyvec_sprodz(owt->s[cpp->f],owt->s[cpp->f],m);
-  ost->betasq += owt->normsq[cpp->f];
+
+  for(nonce=0;nonce<FOLD_GRIND_MAX_ATTEMPTS;nonce++) {
+    fold_grind_seed(hashbuf,ost->h,nonce);
+    polzvec_bitpack(&hashbuf[16],pi->u2,cpp->kappa1);
+    shake128(hashbuf,32,hashbuf,sizeof(hashbuf));
+    polxvec_challenge(ost->c,r,&hashbuf[16],0);
+
+    polxvec_polx_mul(folded_s,&ost->c[0],sx[0],n);
+    polxvec_polx_mul(folded_phi,&ost->c[0],phi[0],n);
+    for(i=1;i<r;i++) {
+      polxvec_polx_mul_add(folded_s,&ost->c[i],sx[i],n);
+      polxvec_polx_mul_add(folded_phi,&ost->c[i],phi[i],n);
+    }
+    polxvec_decompose(owt->s[0],folded_s,n,cpp->f,cpp->b);
+
+    ost->betasq = owt->normsq[cpp->f];
+    for(i=0;i<cpp->f;i++) {
+      owt->normsq[i] = polyvec_sprodz(owt->s[i],owt->s[i],n);
+      ost->betasq += owt->normsq[i];
+    }
+    if(amortized_commitments_secure(cpp,r,n,ost->betasq,0))
+      break;
+  }
+
+  free(hx);
+  if(nonce == FOLD_GRIND_MAX_ATTEMPTS) {
+    free(folded_s);
+    free(folded_phi);
+    fprintf(stderr,"ERROR in amortize(): Fold grind exhausted %u attempts\n",
+            FOLD_GRIND_MAX_ATTEMPTS);
+    return 1;
+  }
+
+  free(ost->cnst->phi);
+  ost->cnst->phi = folded_phi;
+  free(folded_s);
+  pi->foldnonce = nonce;
+  memcpy(ost->h,hashbuf,16);
   pi->normsq = ost->betasq;
 
-  ost->cnst->phi = realloc(ost->cnst->phi,n*sizeof(polx));
-  free(hx);
+  return 0;
 }
 
 int reduce_amortize(statement *ost, const proof *pi) {
@@ -1256,19 +1373,9 @@ int reduce_amortize(statement *ost, const proof *pi) {
   polx (*phi)[n] = (polx(*)[n])ost->cnst->phi;
 
   ost->betasq = pi->normsq;
-  if(!sis_secure(cpp->kappa,ost->n,
-                 6*T*SLACK*ldexp(1,(cpp->f-1)*cpp->b)*sqrt(ost->betasq))) {
-    fprintf(stderr,"ERROR in reduce_amortize(): Inner commitments not secure\n");
+  if(!amortized_commitments_secure(cpp,ost->r,ost->n,ost->betasq,pi->tail)) {
+    fprintf(stderr,"ERROR in reduce_amortize(): Commitments not secure\n");
     return 1;
-  }
-  if(!pi->tail &&
-     (!sis_secure(cpp->kappa1,cpp->fu*ost->r*cpp->kappa+
-                              cpp->fg*(ost->r*ost->r+ost->r)/2,
-                  2*SLACK*sqrt(ost->betasq)) ||
-      !sis_secure(cpp->kappa1,cpp->fu*(ost->r*ost->r+ost->r)/2,
-                  2*SLACK*sqrt(ost->betasq)))) {
-    fprintf(stderr,"ERROR in reduce_amortize(): Outer commitments not secure\n");
-    return 2;
   }
 
   /* second outer commitment resp garbage terms */
@@ -1276,7 +1383,11 @@ int reduce_amortize(statement *ost, const proof *pi) {
 
   __attribute__((aligned(16)))
   uint8_t hashbuf[16+cpp->u2len*N*QBYTES];
-  memcpy(hashbuf,ost->h,16);
+  if(pi->foldnonce >= FOLD_GRIND_MAX_ATTEMPTS) {
+    fprintf(stderr,"ERROR in reduce_amortize(): Invalid fold grind nonce\n");
+    return 3;
+  }
+  fold_grind_seed(hashbuf,ost->h,pi->foldnonce);
 
   if(pi->tail) {
     polzvec_bitpack(&hashbuf[16],pi->u2,1);
@@ -1335,7 +1446,11 @@ int prove(statement *ost, witness *owt, proof *pi, const statement *ist, const w
     free_constraint(cnst);
 
     aggregate(ost,pi,ist);
-    amortize(ost,owt,pi,sx);
+    ret = amortize(ost,owt,pi,sx);
+    if(ret) {
+      ret += 30;
+      goto err;
+    }
     free(buf);
     buf = NULL;
   }

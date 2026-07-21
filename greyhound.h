@@ -31,6 +31,7 @@ typedef struct {
   comparams cpp[1];
   polz *u1;
   polz *u2;
+  uint32_t foldnonce;
   uint64_t normsq;
 } polcomprf;
 
@@ -42,7 +43,7 @@ double print_polcomprf_pp(const polcomprf *pi);
 
 int polcom_commit(polcomctx *ctx, const polz *s, size_t len);
 int64_t polzvec_eval(const polz *a, size_t len, int64_t x);
-void polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, int64_t y);
+int polcom_eval(witness *wt, polcomprf *pi, const polcomctx *ctx, int64_t x, int64_t y);
 int polcom_reduce(prncplstmnt *st, const polcomprf *pi);
 
 size_t polcomprf_serialized_size(const polcomprf *pi);
