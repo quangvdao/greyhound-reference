@@ -51,13 +51,27 @@ int main(int argc, char **argv) {
     return 1;
   }
   len = strtoull(argv[1],NULL,0);
-  if(len == 0 || len > SIZE_MAX/JL_MATRIX_POLY_BYTES) return 2;
+  if(len == 0 ||
+     len > SIZE_MAX/(2*JL_MATRIX_POLY_BYTES) ||
+     len > SIZE_MAX/sizeof(poly) ||
+     len > SIZE_MAX/sizeof(polx)) {
+    fprintf(stderr,"Invalid or overflowing benchmark dimension\n");
+    return 2;
+  }
   matrix_bytes = len*JL_MATRIX_POLY_BYTES;
 
   witness = _aligned_alloc(64,len*sizeof(poly));
   collapsed = _aligned_alloc(64,len*sizeof(polx));
   mat1 = _aligned_alloc(64,matrix_bytes);
   mat2 = _aligned_alloc(64,matrix_bytes);
+  if(!witness || !collapsed || !mat1 || !mat2) {
+    fprintf(stderr,"Benchmark allocation failed for %zu scalar coefficients\n",len*N);
+    free(witness);
+    free(collapsed);
+    free(mat1);
+    free(mat2);
+    return 3;
+  }
   polyvec_ternary(witness,len,seed,0);
 
   for(i=0;i<BENCH_REPETITIONS;i++) {
