@@ -170,7 +170,16 @@ static int expand_witness(witness *ewt, const smplstmnt *ist, const witness *iwt
   ewt->normsq[r] = polyvec_sprodz(ewt->s[r],ewt->s[r],k);
   normsq += ewt->normsq[i];
 
-  normsq *= SLACK*SLACK;
+  {
+    const __uint128_t scaled = (__uint128_t)normsq*JL_L2_ACCEPT_MULT;
+    const __uint128_t rounded = (scaled+JL_L2_LOWER_MULT-1)/JL_L2_LOWER_MULT;
+    if(rounded > UINT64_MAX) {
+      fprintf(stderr,"ERROR: Slack-adjusted witness norm overflows uint64_t\n");
+      ret = 1;
+      goto err;
+    }
+    normsq = (uint64_t)rounded;
+  }
   for(i=0;i<r+1;i++) {
     if((i == r || !ist->betasq[i]) && normsq + sqrt(normsq*ewt->n[i]*N) > ldexp(1,LOGQ)) {
       fprintf(stderr,"ERROR: Total witness norm too big to support binary proof for witness vector %zu\n",i);
@@ -444,11 +453,13 @@ int simple_prove(statement *ost, witness *owt, proof *pi, commitment *com,
 
   {
     const size_t s1 = pi->nu[ist->r];
-    buf = _aligned_alloc(64,ost->r*ost->n*sizeof(polx)+s1*ost->n*256*N/8);
+    const size_t jlbytes = s1*ost->n*JL_MATRIX_POLY_BYTES;
+    buf = _aligned_alloc(64,ost->r*ost->n*sizeof(polx)+2*jlbytes);
     polx (*sx)[ost->n] = (polx(*)[ost->n])buf;
-    uint8_t (*jlmat)[ost->n][256*N/8] = (uint8_t(*)[ost->n][256*N/8])sx[ost->r];
+    uint8_t *jlmat1 = (uint8_t*)sx[ost->r];
+    uint8_t *jlmat2 = jlmat1+jlbytes;
     simple_commit(ost,owt,pi,com,sx,ist,ewt);
-    ret = project(ost,pi,jlmat,ewt);
+    ret = project(ost,pi,jlmat1,jlmat2,ewt);
     if(ret) {
       ret += 20;
       goto err;
@@ -460,7 +471,7 @@ int simple_prove(statement *ost, witness *owt, proof *pi, commitment *com,
 
     init_constraint_raw(cnst,ost->r,ost->n,1,0);
     for(i=0;i<LIFTS;i++) {
-      collaps_jlproj_raw(cnst,s1,ost->n,ost->h,pi->p,jlmat);
+      collaps_jlproj_raw(cnst,s1,ost->n,ost->h,pi->p,jlmat1,jlmat2);
       polxvec_setzero(&cnst->phi[s1*ost->n],(ost->r-s1)*ost->n);
       collaps_sparsecnst(cnst,ost,pi,ist->cnst,ist->k);
       simple_collaps(cnst,ost,pi,com,ist);
@@ -501,7 +512,7 @@ int simple_reduce(statement *ost, const proof *pi, const commitment *com, const 
   size_t i;
   int ret;
   uint64_t betasq = 0;
-  uint8_t (*jlmat)[ost->n][256*N/8];
+  uint8_t *jlmat1 = NULL, *jlmat2;
   constraint cnst[1] = {};
 
   init_statement(ost,pi,ist->h);
@@ -512,23 +523,25 @@ int simple_reduce(statement *ost, const proof *pi, const commitment *com, const 
   }
 
   const size_t s1 = pi->nu[ist->r];
-  jlmat = _aligned_alloc(64,s1*ost->n*256*N/8);
+  const size_t jlbytes = s1*ost->n*JL_MATRIX_POLY_BYTES;
+  jlmat1 = _aligned_alloc(64,2*jlbytes);
+  jlmat2 = jlmat1+jlbytes;
 
   reduce_simple_commit(ost,pi,com);
-  ret = reduce_project(ost,jlmat,pi,ist->r+1,betasq);
+  ret = reduce_project(ost,jlmat1,jlmat2,pi,ist->r+1,betasq);
   if(ret) goto err;  // projection too long
 
   init_constraint(cnst,ost);
   for(i=0;i<LIFTS;i++) {
-    collaps_jlproj_raw(cnst,s1,ost->n,ost->h,pi->p,jlmat);
+    collaps_jlproj_raw(cnst,s1,ost->n,ost->h,pi->p,jlmat1,jlmat2);
     polxvec_setzero(&cnst->phi[s1*ost->n],(ost->r-s1)*ost->n);
     collaps_sparsecnst(cnst,ost,pi,ist->cnst,ist->k);
     simple_collaps(cnst,ost,pi,com,ist);
     reduce_lift_aggregate_zqcnst(ost,pi,i,cnst);
   }
   free_constraint(cnst);
-  free(jlmat);
-  jlmat = NULL;
+  free(jlmat1);
+  jlmat1 = NULL;
 
   simple_aggregate(ost,pi,com,ist);
   aggregate_sparsecnst(ost,pi,ist->cnst,ist->k);
@@ -544,7 +557,7 @@ int simple_reduce(statement *ost, const proof *pi, const commitment *com, const 
 
 err:
   free_statement(ost);
-  free(jlmat);
+  free(jlmat1);
   free_constraint(cnst);
   return ret;
 }

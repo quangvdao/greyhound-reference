@@ -124,7 +124,7 @@ void print_statement_pp(const statement *pi);
 double print_witness_pp(const witness *wt);
 
 /* Canonical proof wire format (little-endian, versioned, self-describing).
- * The size includes proof metadata, the 256 signed JL coordinates, and every
+ * The size includes proof metadata, the 256 sparse-ternary JL coordinates, and every
  * fixed-width ring-element payload.  proof_deserialize expects a zeroed or
  * previously freed destination. */
 size_t proof_serialized_size(const proof *pi);
@@ -158,12 +158,15 @@ size_t qugarbage_raw(polx *u, poly *g, size_t r, size_t n, const polx s[r][n],
 void commit(statement *ost, witness *owt, proof *pi, polx sx[ost->r][ost->n], const witness *iwt);
 void reduce_commit(statement *ost, const proof *pi);
 
-int project(statement *ost, proof *pi, uint8_t jlmat[][ost->n][256*N/8], const witness *iwt);
-int reduce_project(statement *ost, uint8_t jlmat[][ost->n][256*N/8], const proof *pi, size_t r, uint64_t betasq);
+int project(statement *ost, proof *pi, uint8_t *jlmat1, uint8_t *jlmat2,
+            const witness *iwt);
+int reduce_project(statement *ost, uint8_t *jlmat1, uint8_t *jlmat2,
+                   const proof *pi, size_t r, uint64_t betasq);
 
 void collaps_jlproj_raw(constraint *cnst, size_t r, size_t n, uint8_t h[16], const int32_t p[256],
-                       const uint8_t jlmat[r][n][256*N/8]);
-void collaps_jlproj(constraint *cnst, statement *st, const proof *pi, const uint8_t jlmat[st->r][st->n][256*N/8]);
+                        const uint8_t *jlmat1, const uint8_t *jlmat2);
+void collaps_jlproj(constraint *cnst, statement *st, const proof *pi,
+                    const uint8_t *jlmat1, const uint8_t *jlmat2);
 void lift_aggregate_zqcnst(statement *ost, proof *pi, size_t i, constraint *cnst, const polx sx[ost->r][ost->n]);
 void reduce_lift_aggregate_zqcnst(statement *ost, const proof *pi, size_t i, const constraint *cnst);
 

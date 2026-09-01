@@ -392,11 +392,13 @@ int principle_prove(statement *ost, witness *owt, proof *pi, const prncplstmnt *
   printf("Predicted witness norm: %.2f\n\n",sqrt(pi->normsq));
 
   {
-    buf = _aligned_alloc(64,ost->r*ost->n*(sizeof(polx)+256*N/8));
+    const size_t jlbytes = ost->r*ost->n*JL_MATRIX_POLY_BYTES;
+    buf = _aligned_alloc(64,ost->r*ost->n*sizeof(polx)+2*jlbytes);
     polx (*sx)[ost->n] = (polx(*)[ost->n])buf;
-    uint8_t (*jlmat)[ost->n][256*N/8] = (uint8_t(*)[ost->n][256*N/8])sx[ost->r];
+    uint8_t *jlmat1 = (uint8_t*)sx[ost->r];
+    uint8_t *jlmat2 = jlmat1+jlbytes;
     commit(ost,owt,pi,sx,iwt);
-    ret = project(ost,pi,jlmat,iwt);
+    ret = project(ost,pi,jlmat1,jlmat2,iwt);
     if(ret) {
       ret += 10;
       goto err;
@@ -404,7 +406,7 @@ int principle_prove(statement *ost, witness *owt, proof *pi, const prncplstmnt *
 
     init_constraint(cnst,ost);
     for(i=0;i<LIFTS;i++) {
-      collaps_jlproj(cnst,ost,pi,jlmat);
+      collaps_jlproj(cnst,ost,pi,jlmat1,jlmat2);
       collaps_sparsecnst(cnst,ost,pi,ist->cnst,ist->k);
       lift_aggregate_zqcnst(ost,pi,i,cnst,sx);
     }
@@ -436,25 +438,27 @@ err:
 int principle_reduce(statement *ost, const proof *pi, const prncplstmnt *ist) {
   size_t i;
   int ret;
-  uint8_t (*jlmat)[ost->n][256*N/8];
+  uint8_t *jlmat1 = NULL, *jlmat2;
   constraint cnst[1] = {};
 
   init_statement(ost,pi,ist->h);
-  jlmat = _aligned_alloc(64,ost->r*ost->n*256*N/8);
+  const size_t jlbytes = ost->r*ost->n*JL_MATRIX_POLY_BYTES;
+  jlmat1 = _aligned_alloc(64,2*jlbytes);
+  jlmat2 = jlmat1+jlbytes;
 
   reduce_commit(ost,pi);
-  ret = reduce_project(ost,jlmat,pi,pi->r,ist->betasq);
+  ret = reduce_project(ost,jlmat1,jlmat2,pi,pi->r,ist->betasq);
   if(ret) goto err;  // projection too long
 
   init_constraint(cnst,ost);
   for(i=0;i<LIFTS;i++) {
-    collaps_jlproj(cnst,ost,pi,jlmat);
+    collaps_jlproj(cnst,ost,pi,jlmat1,jlmat2);
     collaps_sparsecnst(cnst,ost,pi,ist->cnst,ist->k);
     reduce_lift_aggregate_zqcnst(ost,pi,i,cnst);
   }
   free_constraint(cnst);
-  free(jlmat);
-  jlmat = NULL;
+  free(jlmat1);
+  jlmat1 = NULL;
 
   aggregate_sparsecnst(ost,pi,ist->cnst,ist->k);
   ret = reduce_amortize(ost,pi);
@@ -469,7 +473,7 @@ int principle_reduce(statement *ost, const proof *pi, const prncplstmnt *ist) {
 
 err:
   free_statement(ost);
-  free(jlmat);
+  free(jlmat1);
   free_constraint(cnst);
   return ret;
 }

@@ -718,7 +718,7 @@ double print_proof_pp(const proof *pi) {
     print_sis_audit_pp("labrador-outer-u2",cpp->kappa1,outer2_width,outer_norm);
   }
   printf("  Johnson-Lindenstrauss norm proof:\n");
-  printf("    Projection dimension: 256 signed coordinates\n");
+  printf("    Projection dimension: 256 sparse-ternary coordinates\n");
   printf("    Matrix retry nonce: %zu (number of deterministic candidates tried)\n",pi->jlnonce);
   printf("    Accepted projected l2 norm: %.2f\n",s);
   printf("  Folding challenge grind:\n"
@@ -906,11 +906,22 @@ static uint64_t next2power(uint64_t a) {
   return a;
 }
 
-int project(statement *ost, proof *pi, uint8_t jlmat[][ost->n][256*N/8], const witness *iwt) {
+static void jl_ternary_seed(uint8_t out[32], const uint8_t h[16]) {
+  static const uint8_t domain[] = "GREYHOUND-JL-TERNARY-V1";
+  uint8_t in[16 + sizeof(domain) - 1];
+
+  memcpy(in,h,16);
+  memcpy(&in[16],domain,sizeof(domain)-1);
+  shake128(out,32,in,sizeof(in));
+}
+
+int project(statement *ost, proof *pi, uint8_t *jlmat1, uint8_t *jlmat2,
+            const witness *iwt) {
   const size_t r = iwt->r;
   const size_t *n = iwt->n;
 
   size_t i,j,k,rep;
+  size_t off, bytes;
   uint64_t normsq = 0, test;
   __attribute__((aligned(16)))
   uint8_t hashbuf[16+1024];
@@ -923,8 +934,8 @@ int project(statement *ost, proof *pi, uint8_t jlmat[][ost->n][256*N/8], const w
     return 1;
   }
   test = next2power(4*sqrt(normsq));
-  normsq *= 256;
-  shake128(hashbuf,32,ost->h,16);
+  normsq *= JL_L2_ACCEPT_MULT;
+  jl_ternary_seed(hashbuf,ost->h);
   aes128ctr_init(&aesctx,&hashbuf[16],0);
   pi->jlnonce = 0;
   do {
@@ -932,11 +943,17 @@ int project(statement *ost, proof *pi, uint8_t jlmat[][ost->n][256*N/8], const w
     memset(pi->p,0,256*sizeof(int32_t));
     j = k = 0;
     for(i=0;i<r;i++) {
-      aes128ctr_squeezeblocks(jlmat[j][k],n[i]*256*N/8/AES128CTR_BLOCKBYTES,&aesctx);
-      polyvec_jlproj_add(pi->p,iwt->s[i],n[i],jlmat[j][k]);
+      off = (j*ost->n+k)*JL_MATRIX_POLY_BYTES;
+      bytes = n[i]*JL_MATRIX_POLY_BYTES;
+      aes128ctr_squeezeblocks(&jlmat1[off],bytes/AES128CTR_BLOCKBYTES,&aesctx);
+      aes128ctr_squeezeblocks(&jlmat2[off],bytes/AES128CTR_BLOCKBYTES,&aesctx);
+      polyvec_jlproj_add_ternary(pi->p,iwt->s[i],n[i],&jlmat1[off],&jlmat2[off]);
       k += n[i];
       if(pi->nu[i]) {
-        memset(jlmat[j][k],0,(pi->nu[i]*ost->n-k)*256*N/8);
+        off = (j*ost->n+k)*JL_MATRIX_POLY_BYTES;
+        bytes = (pi->nu[i]*ost->n-k)*JL_MATRIX_POLY_BYTES;
+        memset(&jlmat1[off],0,bytes);
+        memset(&jlmat2[off],0,bytes);
         j += pi->nu[i];
         k = 0;
       }
@@ -952,18 +969,20 @@ int project(statement *ost, proof *pi, uint8_t jlmat[][ost->n][256*N/8], const w
   return 0;
 }
 
-int reduce_project(statement *ost, uint8_t jlmat[][ost->n][256*N/8], const proof *pi, size_t r, uint64_t betasq) {
+int reduce_project(statement *ost, uint8_t *jlmat1, uint8_t *jlmat2,
+                   const proof *pi, size_t r, uint64_t betasq) {
   size_t i,j,k;
+  size_t off, bytes;
   __attribute__((aligned(16)))
   uint8_t hashbuf[16+1024];
   aes128ctr_ctx aesctx;
 
-  if(jlproj_normsq(pi->p) > 256*MIN(JLMAXNORMSQ,betasq)) {
+  if(jlproj_normsq(pi->p) > JL_L2_ACCEPT_MULT*MIN(JLMAXNORMSQ,betasq)) {
     fprintf(stderr,"ERROR in reduce_project(): Witness projection longer than bound\n");
     return 1;
   }
 
-  shake128(hashbuf,32,ost->h,16);
+  jl_ternary_seed(hashbuf,ost->h);
   aes128ctr_init(&aesctx,&hashbuf[16],pi->jlnonce);
   memcpy(&hashbuf[16],pi->p,1024);
   shake128(ost->h,16,hashbuf,sizeof(hashbuf));
@@ -971,10 +990,16 @@ int reduce_project(statement *ost, uint8_t jlmat[][ost->n][256*N/8], const proof
   /* JL Matrix */
   j = k = 0;
   for(i=0;i<r;i++) {
-    aes128ctr_squeezeblocks(jlmat[j][k],pi->n[i]*256*N/8/AES128CTR_BLOCKBYTES,&aesctx);
+    off = (j*ost->n+k)*JL_MATRIX_POLY_BYTES;
+    bytes = pi->n[i]*JL_MATRIX_POLY_BYTES;
+    aes128ctr_squeezeblocks(&jlmat1[off],bytes/AES128CTR_BLOCKBYTES,&aesctx);
+    aes128ctr_squeezeblocks(&jlmat2[off],bytes/AES128CTR_BLOCKBYTES,&aesctx);
     k += pi->n[i];
     if(pi->nu[i]) {
-      memset(jlmat[j][k],0,(pi->nu[i]*ost->n-k)*256*N/8);
+      off = (j*ost->n+k)*JL_MATRIX_POLY_BYTES;
+      bytes = (pi->nu[i]*ost->n-k)*JL_MATRIX_POLY_BYTES;
+      memset(&jlmat1[off],0,bytes);
+      memset(&jlmat2[off],0,bytes);
       j += pi->nu[i];
       k = 0;
     }
@@ -984,7 +1009,7 @@ int reduce_project(statement *ost, uint8_t jlmat[][ost->n][256*N/8], const proof
 }
 
 void collaps_jlproj_raw(constraint *cnst, size_t r, size_t n, uint8_t h[16], const int32_t p[256],
-                       const uint8_t jlmat[r][n][256*N/8])
+                        const uint8_t *jlmat1, const uint8_t *jlmat2)
 {
   __attribute__((aligned(32)))
   uint8_t hashbuf[32+QBYTES*256+24];  // additional 24 bytes because of vector loads
@@ -992,13 +1017,14 @@ void collaps_jlproj_raw(constraint *cnst, size_t r, size_t n, uint8_t h[16], con
 
   shake128(hashbuf,sizeof(hashbuf),h,16);
   memcpy(h,hashbuf,16);
-  polxvec_jlproj_collapsmat(cnst->phi,**jlmat,r*n,&hashbuf[32]);
+  polxvec_jlproj_collapsmat_ternary(cnst->phi,jlmat1,jlmat2,r*n,&hashbuf[32]);
   x = jlproj_collapsproj(p,&hashbuf[32]);
   polx_monomial(cnst->b,x,0);
 }
 
-void collaps_jlproj(constraint *cnst, statement *st, const proof *pi, const uint8_t jlmat[st->r][st->n][256*N/8]) {
-  collaps_jlproj_raw(cnst,st->r,st->n,st->h,pi->p,jlmat);
+void collaps_jlproj(constraint *cnst, statement *st, const proof *pi,
+                    const uint8_t *jlmat1, const uint8_t *jlmat2) {
+  collaps_jlproj_raw(cnst,st->r,st->n,st->h,pi->p,jlmat1,jlmat2);
 }
 
 void lift_aggregate_zqcnst(statement *ost, proof *pi, size_t i, constraint *cnst, const polx sx[ost->r][ost->n]) {
@@ -1428,11 +1454,13 @@ int prove(statement *ost, witness *owt, proof *pi, const statement *ist, const w
   printf("Predicted witness norm: %.2f\n\n",sqrt(pi->normsq));
 
   {
-    buf = _aligned_alloc(64,ost->r*ost->n*(sizeof(polx)+256*N/8));
+    const size_t jlbytes = ost->r*ost->n*JL_MATRIX_POLY_BYTES;
+    buf = _aligned_alloc(64,ost->r*ost->n*sizeof(polx)+2*jlbytes);
     polx (*sx)[ost->n] = (polx(*)[ost->n])buf;
-    uint8_t (*jlmat)[ost->n][256*N/8] = (uint8_t(*)[ost->n][256*N/8])sx[ost->r];
+    uint8_t *jlmat1 = (uint8_t*)sx[ost->r];
+    uint8_t *jlmat2 = jlmat1+jlbytes;
     commit(ost,owt,pi,sx,iwt);
-    ret = project(ost,pi,jlmat,iwt);
+    ret = project(ost,pi,jlmat1,jlmat2,iwt);
     if(ret) {
       ret += 10;
       goto err;
@@ -1440,7 +1468,7 @@ int prove(statement *ost, witness *owt, proof *pi, const statement *ist, const w
 
     init_constraint_raw(cnst,ost->r,ost->n,1,0);
     for(i=0;i<LIFTS;i++) {
-      collaps_jlproj(cnst,ost,pi,jlmat);
+      collaps_jlproj(cnst,ost,pi,jlmat1,jlmat2);
       lift_aggregate_zqcnst(ost,pi,i,cnst,sx);
     }
     free_constraint(cnst);
@@ -1471,24 +1499,26 @@ err:
 int reduce(statement *ost, const proof *pi, const statement *ist) {
   size_t i;
   int ret;
-  uint8_t (*jlmat)[ost->n][256*N/8];
+  uint8_t *jlmat1 = NULL, *jlmat2;
   constraint cnst[1];
 
   init_statement(ost,pi,ist->h);
   init_constraint(cnst,ost);
-  jlmat = _aligned_alloc(64,ost->r*ost->n*256*N/8);
+  const size_t jlbytes = ost->r*ost->n*JL_MATRIX_POLY_BYTES;
+  jlmat1 = _aligned_alloc(64,2*jlbytes);
+  jlmat2 = jlmat1+jlbytes;
 
   reduce_commit(ost,pi);
-  ret = reduce_project(ost,jlmat,pi,pi->r,ist->betasq);
+  ret = reduce_project(ost,jlmat1,jlmat2,pi,pi->r,ist->betasq);
   if(ret) goto err;  // projection too long
 
   for(i=0;i<LIFTS;i++) {
-    collaps_jlproj(cnst,ost,pi,jlmat);
+    collaps_jlproj(cnst,ost,pi,jlmat1,jlmat2);
     reduce_lift_aggregate_zqcnst(ost,pi,i,cnst);
   }
   free_constraint(cnst);
-  free(jlmat);
-  jlmat = NULL;
+  free(jlmat1);
+  jlmat1 = NULL;
 
   aggregate(ost,pi,ist);
   ret = reduce_amortize(ost,pi);
@@ -1504,7 +1534,7 @@ int reduce(statement *ost, const proof *pi, const statement *ist) {
 err:
   free_statement(ost);
   free_constraint(cnst);
-  free(jlmat);
+  free(jlmat1);
   return ret;
 }
 

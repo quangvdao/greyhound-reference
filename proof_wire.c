@@ -6,7 +6,7 @@
 #include "labrador.h"
 
 #define PROOF_WIRE_HEADER_BYTES 124
-#define PROOF_WIRE_VERSION 3
+#define PROOF_WIRE_VERSION 4
 #define JL_COORDINATES 256
 #define MAX_RICE_K 31
 

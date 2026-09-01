@@ -11,7 +11,11 @@
 #define TAU1 32
 #define TAU2 8
 #define T 14  // challenge operator norm
-#define SLACK 2 // FIXME
+
+/* Sparse ternary JL: accept below 128*beta^2 and extract below 29*||w||^2. */
+#define JL_L2_ACCEPT_MULT 128
+#define JL_L2_LOWER_MULT 29
+#define SLACK sqrt((double)JL_L2_ACCEPT_MULT / (double)JL_L2_LOWER_MULT)
 
 #if LOGQ == 24
 #define QOFF 3

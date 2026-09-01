@@ -142,6 +142,28 @@ GREYHOUND_BENCH_PACK_ONLY=1 \
 Each fold reports its algebraic dimensions, digit decompositions, commitment
 ranks, norm bounds, JL projection data, exact proof payload, and SIS estimate.
 
+## JL projection
+
+Norm proofs use a 256-row sparse-ternary matrix. Each entry is sampled exactly
+as
+
+```text
+A = (S1 + S2) / 2,
+```
+
+where `S1` and `S2` are independent packed sign matrices. Thus an entry is
+`-1`, `0`, or `1` with probabilities `1/4`, `1/2`, and `1/4`. The prover uses
+two calls to the optimized sign-projection kernel. The verifier collapses both
+packed planes into one accumulator and performs only one ring conversion.
+
+The accepted projected squared norm is at most `128 * beta^2`. The certified
+lower-tail multiplier is 29, so SIS parameter selection uses the exact slack
+factor `sqrt(128/29)`, approximately `2.1009`. The transcript domain is
+`GREYHOUND-JL-TERNARY-V1`; self-describing proof envelopes use wire version 4.
+The existing JL nonce remains a deterministic retry index for finding an
+accepted projection. This change introduces no separate nonce cap or decoder
+policy.
+
 ## SIS security policy
 
 The default `legacy-heuristic` policy preserves the upstream parameter
