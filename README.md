@@ -43,33 +43,26 @@ the accounting boundary explicitly instead of claiming a one-to-one mapping.
 The security mode is a concrete parameter-estimation policy, not an end-to-end
 security proof or implementation audit.
 
-## Benchmark results
+## Sparse-ternary benchmark results
 
-The portable backend was measured on an Apple M4 MacBook Air with 10 CPU cores
-and 24 GB RAM under `LABRADOR_SIS_SECURITY=l2-quantum128-adps16`. Exact
-contextual proofs remain between 56,505 and 64,701 bytes across degrees 2^20
-through 2^28, while every selected SIS instance meets the configured 128-bit
-quantum ADPS16 estimate.
+The current AVX-512 comparison uses matched deterministic witnesses and the
+`l2-quantum128-adps16` policy. Five after-runs give the following contextual
+proof sizes; the minimum-security column covers every accepted SIS instance in
+those runs.
 
-| Degree | Proof bytes | Fold bytes | Tail bytes (`t + h + z`) | Minimum quantum bits |
-|---:|---:|---:|---:|---:|
-| 2^20 | 56,505 | 23,033 | 33,472 | 128.790 |
-| 2^21 | 56,728 | 23,311 | 33,417 | 129.585 |
-| 2^22 | 59,430 | 26,834 | 32,596 | 130.380 |
-| 2^23 | 59,108 | 26,860 | 32,248 | 129.585 |
-| 2^24 | 58,917 | 26,879 | 32,038 | 129.320 |
-| 2^25 | 60,280 | 27,679 | 32,601 | 128.260 |
-| 2^26 | 62,298 | 28,724 | 33,574 | 129.055 |
-| 2^27 | 64,701 | 32,297 | 32,404 | 128.790 |
-| 2^28 | 64,662 | 32,281 | 32,381 | 129.585 |
+| Degree | Median proof bytes | Observed range | Top rank `kappa/kappa1` | Pack members | Minimum quantum bits |
+|---:|---:|---:|---:|---:|---:|
+| 2^22 | 59,267 | 59,247–59,329 | 22/8 | 7 | 129.055 |
+| 2^24 | 59,060 | 59,056–60,704 | 23/9 | 7 | 128.260 |
+| 2^26 | 64,509 | 62,434–64,666 | 24/9 | 7–8 | 131.970 |
 
-Here the comparison tail is the terminal inner commitment `t`, linear
-relation term `h`, and folded witness `z`; remaining terminal
-proof-of-relation data stays with the fold bytes. See [BENCHMARKS.md](BENCHMARKS.md)
-for the exact `t/h/z` split, every fold's parameters and SIS estimate, raw wire
-composition, runtimes, reproduction commands, and the explanation of the
-non-monotonic size curve. The 2^28 measurement uses the streaming witness path,
-so its runtime is not directly comparable to the parallel non-streaming rows.
+Compared with the dense-sign baseline, whole-prover time rises by about
+20–38% and whole-verifier time by 24–28% at these sizes. Exact proof bytes are
+nearly unchanged at `2^22` and `2^24`; at `2^26`, the corrected schedule can
+add a fold and raises the paired median by 1.81%. See
+[BENCHMARKS.md](BENCHMARKS.md) for standalone matrix/projection/collapse costs,
+whole-path timing and memory, proof-size decomposition, parameter changes, and
+reproduction commands.
 
 ## What this fork adds
 

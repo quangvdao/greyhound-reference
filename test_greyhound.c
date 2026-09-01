@@ -5,6 +5,7 @@
 #include <time.h>
 #include "malloc.h"
 #include "randombytes.h"
+#include "fips202.h"
 #include "labrador.h"
 #include "chihuahua.h"
 #include "pack.h"
@@ -15,6 +16,23 @@ static double wall_time(void) {
 
   clock_gettime(CLOCK_MONOTONIC,&t);
   return (double)t.tv_sec+1e-9*t.tv_nsec;
+}
+
+static void benchmark_seed(uint8_t seed[16], uint8_t domain) {
+  static const uint8_t prefix[] = "GREYHOUND-BENCH-SEED-V1";
+  const char *value = getenv("GREYHOUND_BENCH_SEED");
+  shake128incctx ctx;
+
+  if(value == NULL) {
+    randombytes(seed,16);
+    return;
+  }
+  shake128_inc_init(&ctx);
+  shake128_inc_absorb(&ctx,prefix,sizeof(prefix)-1);
+  shake128_inc_absorb(&ctx,(const uint8_t*)value,strlen(value));
+  shake128_inc_absorb(&ctx,&domain,1);
+  shake128_inc_finalize(&ctx);
+  shake128_inc_squeeze(seed,16,&ctx);
 }
 
 static int test_polcom(size_t len) {
@@ -29,7 +47,7 @@ static int test_polcom(size_t len) {
   uint8_t seed[16];
 
   printf("Testing Greyhound polynomial commitment scheme\n\n");
-  randombytes(seed,16);
+  benchmark_seed(seed,0);
   s = _aligned_alloc(64,len*sizeof(polz));
   polzvec_almostuniform(s,len,seed,0);
   polzvec_center(s,len);
@@ -90,7 +108,7 @@ static int test_pack(size_t len) {
   uint8_t seed[16];
 
   printf("Testing Greyhound Pack for degree 2^%.2g\n\n",log2(len << 6));
-  randombytes(seed,16);
+  benchmark_seed(seed,1);
   s = _aligned_alloc(64,len*sizeof(polz));
   polzvec_almostuniform(s,len,seed,0);
   polzvec_center(s,len);

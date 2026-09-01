@@ -73,6 +73,9 @@ test_polz: test_polz.c data.c data.h polx.c polx.h poly.c poly.h polz.c polz.h $
 test_jlproj: test_jlproj.c data.c data.h jlproj.c jlproj.h polx.c polx.h poly.c poly.h polz.c polz.h $(NTT_SOURCES) fq.inc shuffle.inc aesctr.c aesctr.h fips202.c fips202.h randombytes.c randombytes.h cpucycles.c cpucycles.h
 	$(CC) $(CFLAGS) test_jlproj.c jlproj.c data.c polx.c poly.c polz.c parallel.c $(NTT_SOURCES) aesctr.c fips202.c randombytes.c cpucycles.c -o test_jlproj -lm
 
+test_jlproj_scale: test_jlproj_scale.c data.c data.h jlproj.c jlproj.h polx.c polx.h poly.c poly.h polz.c polz.h $(NTT_SOURCES) fq.inc shuffle.inc aesctr.c aesctr.h fips202.c fips202.h randombytes.c randombytes.h
+	$(CC) $(CFLAGS) test_jlproj_scale.c jlproj.c data.c polx.c poly.c polz.c parallel.c $(NTT_SOURCES) aesctr.c fips202.c randombytes.c -o test_jlproj_scale -lm
+
 test_sis_estimator: test_sis_estimator.c $(SOURCES) $(HEADERS)
 	$(CC) $(CFLAGS) test_sis_estimator.c $(SOURCES) -o $@ -lm
 
@@ -98,6 +101,7 @@ clean:
 	-$(RM) -f test_poly
 	-$(RM) -f test_polz
 	-$(RM) -f test_jlproj
+	-$(RM) -f test_jlproj_scale
 	-$(RM) -f test_sis_estimator
 	-$(RM) -f test_proof_wire
 	-$(RM) -f test_chihuahua
