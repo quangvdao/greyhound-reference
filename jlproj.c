@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "data.h"
+#include "parallel.h"
 #include "polz.h"
 #include "jlproj.h"
 
@@ -13,6 +14,9 @@
  * 2 dwords -> qword: 4 row stride
  * 8 qwords -> zvec: 1 col stride
  */
+
+#define JLPROJ_PARALLEL_PROJECTION_MIN_POLYS 16384
+#define JLPROJ_PARALLEL_COLLAPSE_MIN_POLYS 512
 
 void poly_jlproj_add(int32_t out[256], const poly *in, const uint8_t mat[256*N/8]) {
   int i;
@@ -228,6 +232,20 @@ void polyvec_jlproj_add(int32_t r[256], const poly *p, size_t len, const uint8_t
     poly_jlproj_add(r,&p[i],&mat[256*N/8*i]);
 }
 
+typedef struct {
+  int32_t *projection[2];
+  const poly *polynomials;
+  size_t len;
+  const uint8_t *matrix[2];
+} jlproj_ternary_job;
+
+static void polyvec_jlproj_ternary_plane(size_t plane, void *context) {
+  jlproj_ternary_job *job = context;
+
+  polyvec_jlproj_add(job->projection[plane],job->polynomials,job->len,
+                     job->matrix[plane]);
+}
+
 /*
  * Realize the sparse ternary law as (S1 + S2)/2 for two independent packed
  * sign matrices.  The two dense projections are combined through int64_t so
@@ -240,9 +258,20 @@ void polyvec_jlproj_add_ternary(int32_t r[256], const poly *p, size_t len,
   int32_t p1[256] = {0};
   __attribute__((aligned(64)))
   int32_t p2[256] = {0};
+  jlproj_ternary_job job = {
+    .projection = {p1,p2},
+    .polynomials = p,
+    .len = len,
+    .matrix = {mat1,mat2}
+  };
 
-  polyvec_jlproj_add(p1,p,len,mat1);
-  polyvec_jlproj_add(p2,p,len,mat2);
+  /* Thread creation only pays off for the large standalone projection path. */
+  if(len >= JLPROJ_PARALLEL_PROJECTION_MIN_POLYS)
+    parallel_for(2,len*N,polyvec_jlproj_ternary_plane,&job);
+  else {
+    polyvec_jlproj_ternary_plane(0,&job);
+    polyvec_jlproj_ternary_plane(1,&job);
+  }
   for(i=0;i<256;i++) {
     const int64_t sum = (int64_t)p1[i] + (int64_t)p2[i];
     r[i] += (int32_t)(sum / 2);
@@ -562,87 +591,80 @@ void polxvec_jlproj_collapsmat(polx *r, const uint8_t *mat, size_t len, const ui
   }
 }
 
-/*
- * Collapse A=(S1+S2)/2 directly.  Both sign planes accumulate into the same
- * integer buffer.  Every resulting coefficient is even, so divide the raw
- * accumulator exactly by two before its single ring conversion pass.
- */
-void polxvec_jlproj_collapsmat_ternary(polx *r, const uint8_t *mat1,
-                                      const uint8_t *mat2, size_t len,
-                                      const uint8_t buf[256*QBYTES]) {
+typedef struct {
+  polx *out;
+  const uint8_t *matrix1;
+  const uint8_t *matrix2;
+  size_t len;
+  const int64_t *alpha;
+} jlproj_ternary_collapse_job;
+
+static void jlproj_ternary_collapse_block(size_t block, void *context) {
+  jlproj_ternary_collapse_job *job = context;
   size_t i,j,k;
+  const size_t offset = 16*block;
+  const size_t len = MIN((size_t)16,job->len-offset);
+  const uint8_t *mat1 = &job->matrix1[offset*JL_MATRIX_POLY_BYTES];
+  const uint8_t *mat2 = &job->matrix2[offset*JL_MATRIX_POLY_BYTES];
   __m512i f,g;
   const __m512i qoff = _mm512_set1_epi64(QOFF);
   const __m512i mask = _mm512_set1_epi64(((uint64_t)1 << LOGQ) - 1);
   const __m512i mask14 = _mm512_set1_epi64((1 << 14) - 1);
   const __mmask32 oneinfour = _cvtu32_mask32(0x11111111);
   __attribute__((aligned(64)))
-  int64_t alpha[256];
-  __attribute__((aligned(64)))
   int64_t raw[16*N];
   polz t[16];
 
+  for(i=0;i<len*N;i++)
+    raw[i] = 0;
+  for(i=0;i<256/32;i++) {
+    jlproj_collapsmat32(raw,&mat1[32*16/8*i],len*N,&job->alpha[32*i]);
+    jlproj_collapsmat32(raw,&mat2[32*16/8*i],len*N,&job->alpha[32*i]);
+  }
+
+  for(i=0;i<len;i++) {
+    for(j=0;j<N/8;j++) {
+      f = _mm512_load_si512((__m512i*)&raw[N*i+8*j]);
+      f = _mm512_srai_epi64(f,1);
+      g = _mm512_srai_epi64(f,LOGQ);
+      f = _mm512_and_si512(f,mask);
+      g = _mm512_mul_epi32(g,qoff);
+      f = _mm512_add_epi64(f,g);
+      for(k=0;k<L-1;k++) {
+        g = _mm512_and_si512(f,mask14);
+        f = _mm512_srai_epi64(f,14);
+        _mm512_mask_compressstoreu_epi16(&t[i].limbs[k].c[8*j],oneinfour,g);
+      }
+      _mm512_mask_compressstoreu_epi16(&t[i].limbs[L-1].c[8*j],oneinfour,f);
+    }
+  }
+  polzvec_sigmam1(t,t,len);
+  polzvec_topolxvec(&job->out[offset],t,len);
+}
+
+/*
+ * Collapse A=(S1+S2)/2 directly.  Both sign planes accumulate into the same
+ * integer buffer.  Every resulting coefficient is even, so divide the raw
+ * accumulator exactly by two before its single ring conversion pass.  Output
+ * blocks are independent and are distributed across the configured workers.
+ */
+void polxvec_jlproj_collapsmat_ternary(polx *r, const uint8_t *mat1,
+                                      const uint8_t *mat2, size_t len,
+                                      const uint8_t buf[256*QBYTES]) {
+  __attribute__((aligned(64)))
+  int64_t alpha[256];
+  jlproj_ternary_collapse_job job = {
+    .out = r,
+    .matrix1 = mat1,
+    .matrix2 = mat2,
+    .len = len,
+    .alpha = alpha
+  };
+
   expand_challenge(alpha,buf);
-
-  while(len >= 16) {
-    for(i=0;i<16*N;i++)
-      raw[i] = 0;
-    for(i=0;i<256/32;i++) {
-      jlproj_collapsmat32(raw,&mat1[32*16/8*i],16*N,&alpha[32*i]);
-      jlproj_collapsmat32(raw,&mat2[32*16/8*i],16*N,&alpha[32*i]);
-    }
-
-    for(i=0;i<16;i++) {
-      for(j=0;j<N/8;j++) {
-        f = _mm512_load_si512((__m512i*)&raw[N*i+8*j]);
-        f = _mm512_srai_epi64(f,1);
-        g = _mm512_srai_epi64(f,LOGQ);
-        f = _mm512_and_si512(f,mask);
-        g = _mm512_mul_epi32(g,qoff);
-        f = _mm512_add_epi64(f,g);
-        for(k=0;k<L-1;k++) {
-          g = _mm512_and_si512(f,mask14);
-          f = _mm512_srai_epi64(f,14);
-          _mm512_mask_compressstoreu_epi16(&t[i].limbs[k].c[8*j],oneinfour,g);
-        }
-        _mm512_mask_compressstoreu_epi16(&t[i].limbs[L-1].c[8*j],oneinfour,f);
-      }
-    }
-    polzvec_sigmam1(t,t,16);
-    polzvec_topolxvec(r,t,16);
-    r += 16;
-    mat1 += 256*16*N/8;
-    mat2 += 256*16*N/8;
-    len -= 16;
-  }
-
-  if(len) {
-    for(i=0;i<len*N;i++)
-      raw[i] = 0;
-    for(i=0;i<256/32;i++) {
-      jlproj_collapsmat32(raw,&mat1[32*16/8*i],len*N,&alpha[32*i]);
-      jlproj_collapsmat32(raw,&mat2[32*16/8*i],len*N,&alpha[32*i]);
-    }
-
-    for(i=0;i<len;i++) {
-      for(j=0;j<N/8;j++) {
-        f = _mm512_load_si512((__m512i*)&raw[N*i+8*j]);
-        f = _mm512_srai_epi64(f,1);
-        g = _mm512_srai_epi64(f,LOGQ);
-        f = _mm512_and_si512(f,mask);
-        g = _mm512_mul_epi32(g,qoff);
-        f = _mm512_add_epi64(f,g);
-        for(k=0;k<L-1;k++) {
-          g = _mm512_and_si512(f,mask14);
-          f = _mm512_srai_epi64(f,14);
-          _mm512_mask_compressstoreu_epi16(&t[i].limbs[k].c[8*j],oneinfour,g);
-        }
-        _mm512_mask_compressstoreu_epi16(&t[i].limbs[L-1].c[8*j],oneinfour,f);
-      }
-    }
-    polzvec_sigmam1(t,t,len);
-    polzvec_topolxvec(r,t,len);
-  }
+  parallel_for((len+15)/16,
+               len >= JLPROJ_PARALLEL_COLLAPSE_MIN_POLYS ? 256*16*N : 0,
+               jlproj_ternary_collapse_block,&job);
 }
 
 static inline int64_t _mm512_hsum_epi64(__m512i a) {

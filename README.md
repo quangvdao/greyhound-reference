@@ -56,10 +56,12 @@ those runs.
 | 2^24 | 59,060 | 59,056–60,704 | 23/9 | 7 | 128.260 |
 | 2^26 | 64,509 | 62,434–64,666 | 24/9 | 7–8 | 131.970 |
 
-Compared with the dense-sign baseline, whole-prover time rises by about
-20–38% and whole-verifier time by 24–28% at these sizes. Exact proof bytes are
-nearly unchanged at `2^22` and `2^24`; at `2^26`, the corrected schedule can
-add a fold and raises the paired median by 1.81%. See
+Compared with the old dense-sign implementation, the two-worker sparse-ternary
+prover is 2% faster at `2^22`, 9% slower at `2^24` after its required outer-rank
+increase, and 4% faster at `2^26`. Verification is 8–10% faster across the
+three sizes. Exact proof bytes are nearly unchanged at `2^22` and `2^24`; at
+`2^26`, the corrected schedule can add a fold and raises the paired median by
+1.81%. See
 [BENCHMARKS.md](BENCHMARKS.md) for standalone matrix/projection/collapse costs,
 whole-path timing and memory, proof-size decomposition, parameter changes, and
 reproduction commands.

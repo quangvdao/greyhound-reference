@@ -29,15 +29,22 @@ conversion.
 
 | `n_v` | Polys | Matrix bytes before/after | Derive before/after | Project before/after | Collapse before/after | Peak RSS |
 |---:|---:|---:|---:|---:|---:|---:|
-| `2^22` | 65,536 | 128 / 256 MiB | 5.98 / 11.86 ms (`1.98x`) | 28.31 / 55.84 ms (`1.97x`) | 74.92 / 95.14 ms (`1.27x`) | 314 MiB |
-| `2^24` | 262,144 | 512 MiB / 1 GiB | 24.05 / 53.25 ms (`2.21x`) | 115.38 / 226.21 ms (`1.96x`) | 308.24 / 383.33 ms (`1.24x`) | 1.22 GiB |
-| `2^26` | 1,048,576 | 2 / 4 GiB | 99.72 / 201.44 ms (`2.02x`) | 468.69 / 935.33 ms (`2.00x`) | 1.317 / 1.570 s (`1.19x`) | 4.88 GiB |
+| `2^22` | 65,536 | 128 / 256 MiB | 6.11 / 11.82 ms (`1.93x`) | 28.76 / 35.30 ms (`1.23x`) | 95.55 / 56.31 ms (`0.59x`) | 314 MiB |
+| `2^24` | 262,144 | 512 MiB / 1 GiB | 24.45 / 48.83 ms (`2.00x`) | 114.63 / 133.30 ms (`1.16x`) | 330.05 / 209.86 ms (`0.64x`) | 1.22 GiB |
+| `2^26` | 1,048,576 | 2 / 4 GiB | 99.31 / 196.49 ms (`1.98x`) | 458.32 / 483.95 ms (`1.06x`) | 1.325 / 0.961 s (`0.73x`) | 4.88 GiB |
 
-The result is the expected performance shape. Two independent bit planes cost
-approximately `2x` for derivation and prover projection. The verifier is much
-better than `2x`: both planes accumulate into one integer buffer, which is
-halved exactly before a single ring-conversion pass. Its overhead falls from
-`1.27x` to `1.19x` as the vector grows.
+Two independent bit planes still cost approximately `2x` to derive. Projection
+runs the independent planes concurrently above 16,384 polynomials; its overhead
+therefore falls from `1.23x` to `1.06x` as thread-launch cost is amortized. The
+collapse kernel accumulates both planes into one integer buffer, halves exactly,
+and performs one ring conversion. Independent 16-polynomial output blocks run
+across the two configured workers, making its wall time lower than the old
+single-thread dense kernel. This is an actual implementation comparison, not a
+claim that the ternary arithmetic requires less total CPU work than dense.
+A one-worker control measures ternary collapse at `1.11x`, `1.12x`, and
+`1.15x` dense time for `2^22`, `2^24`, and `2^26`; the two-worker speedup is
+therefore parallel wall-time recovery, while the remaining arithmetic overhead
+is only 11–15%.
 
 Peak RSS in this synthetic test includes the witness, both matrices, and the
 full collapsed ring vector simultaneously. The protocol's stage-local memory
@@ -51,14 +58,15 @@ unchanged. `Prove` and `verify` include the complete Pack paths, not only JL.
 
 | `n_v` | Commit before/after | Prove before/after | Verify before/after |
 |---:|---:|---:|---:|
-| `2^22` | 0.141 / 0.138 s (`0.98x`) | 0.285 / 0.343 s (`1.20x`) | 0.172 / 0.217 s (`1.27x`) |
-| `2^24` | 0.546 / 0.565 s (`1.04x`) | 0.574 / 0.710 s (`1.24x`) | 0.308 / 0.381 s (`1.24x`) |
-| `2^26` | 2.976 / 2.961 s (`0.99x`) | 1.719 / 2.375 s (`1.38x`) | 0.644 / 0.828 s (`1.28x`) |
+| `2^22` | 0.141 / 0.134 s (`0.95x`) | 0.285 / 0.279 s (`0.98x`) | 0.172 / 0.156 s (`0.91x`) |
+| `2^24` | 0.546 / 0.539 s (`0.99x`) | 0.574 / 0.626 s (`1.09x`) | 0.308 / 0.283 s (`0.92x`) |
+| `2^26` | 2.976 / 2.958 s (`0.99x`) | 1.719 / 1.659 s (`0.96x`) | 0.644 / 0.581 s (`0.90x`) |
 
-The `2^26` prover ratio includes a real schedule effect: the corrected
-parameters sometimes select an eighth Pack member. Across the four paired
-after-runs, proving times were 2.234, 3.495, 2.471, and 2.279 seconds; the
-3.495-second run is retained in the median.
+The only remaining prover regression is `9%` at `2^24`, where the corrected
+parameters raise the top outer rank from 8 to 9. At `2^26`, the sparse-ternary
+path is still `4%` faster even though the corrected schedule changes the top
+shape and sometimes selects an eighth Pack member. Across the four paired
+after-runs, proving times were 1.729, 1.650, 1.627, and 1.667 seconds.
 
 One paired-seed run under `/usr/bin/time -v` gives the following whole-process
 peak RSS. Unlike the standalone test, Greyhound never holds matrices for the

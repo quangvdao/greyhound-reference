@@ -6,6 +6,7 @@
 #include "data.h"
 #include "randombytes.h"
 #include "jlproj.h"
+#include "malloc.h"
 #include "poly.h"
 #include "polz.h"
 
@@ -120,6 +121,53 @@ int main(void) {
   if(!zz_equal(&x,&y)) {
     fprintf(stderr,"ERROR: Ternary constant coeff doesn't match\n");
     return 6;
+  }
+
+  /* Exercise the block-parallel collapse path against dense composition. */
+  {
+    const size_t parallel_len = 512;
+    const size_t matrix_bytes = parallel_len*JL_MATRIX_POLY_BYTES;
+    uint8_t *parallel_mat1 = _aligned_alloc(64,matrix_bytes);
+    uint8_t *parallel_mat2 = _aligned_alloc(64,matrix_bytes);
+    polx *parallel_dense1 = _aligned_alloc(64,parallel_len*sizeof(polx));
+    polx *parallel_dense2 = _aligned_alloc(64,parallel_len*sizeof(polx));
+    polx *parallel_ternary = _aligned_alloc(64,parallel_len*sizeof(polx));
+
+    if(!parallel_mat1 || !parallel_mat2 || !parallel_dense1 ||
+       !parallel_dense2 || !parallel_ternary) {
+      fprintf(stderr,"ERROR: Parallel collapse test allocation failed\n");
+      free(parallel_mat1);
+      free(parallel_mat2);
+      free(parallel_dense1);
+      free(parallel_dense2);
+      free(parallel_ternary);
+      return 7;
+    }
+    randombytes(parallel_mat1,matrix_bytes);
+    randombytes(parallel_mat2,matrix_bytes);
+    polxvec_jlproj_collapsmat(parallel_dense1,parallel_mat1,parallel_len,buf);
+    polxvec_jlproj_collapsmat(parallel_dense2,parallel_mat2,parallel_len,buf);
+    polxvec_jlproj_collapsmat_ternary(parallel_ternary,parallel_mat1,
+                                     parallel_mat2,parallel_len,buf);
+    for(i=0;i<parallel_len;i++) {
+      polx_add(&tmp,&parallel_dense1[i],&parallel_dense2[i]);
+      polx_scale(&tref,&tmp,((UINT64_C(1) << LOGQ)-QOFF+1)/2);
+      polx_sub(&tmp,&parallel_ternary[i],&tref);
+      if(!polx_iszero(&tmp)) {
+        fprintf(stderr,"ERROR: Parallel ternary collapse mismatch at %zu\n",i);
+        free(parallel_mat1);
+        free(parallel_mat2);
+        free(parallel_dense1);
+        free(parallel_dense2);
+        free(parallel_ternary);
+        return 8;
+      }
+    }
+    free(parallel_mat1);
+    free(parallel_mat2);
+    free(parallel_dense1);
+    free(parallel_dense2);
+    free(parallel_ternary);
   }
 
   memset(p,0,sizeof(p));
